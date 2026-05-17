@@ -1,0 +1,44 @@
+# Reports and output
+reports/
+*.md.bak
+*.html.bak
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local test outputs
+test_reports/
+local_output/
+
+# Credentials and sensitive data
+.env
+.env.local
+*.key
+*.pem

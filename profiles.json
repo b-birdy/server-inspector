@@ -1,0 +1,516 @@
+{
+  "schema_version": "1.0",
+  "tool_version": "1.2.0",
+  "_doc": "Server Inspector 外部配置：包含各类硬件的检测命令、解析正则、规格库。修改本文件可直接扩展脚本支持范围，无需改 Python 代码。",
+
+  "platforms_supported": ["linux"],
+
+  "bin_search_paths": [
+    "/bin", "/usr/bin", "/sbin", "/usr/sbin",
+    "/usr/local/bin", "/usr/local/sbin",
+    "/opt/bin", "/snap/bin",
+    "/opt/rocm/bin", "/opt/dtk/bin",
+    "/opt/mxdriver/bin", "/opt/mthreads/bin",
+    "/opt/cambricon/neuware/bin",
+    "/usr/local/Ascend/driver/tools",
+    "/usr/local/Ascend/ascend-toolkit/latest/bin"
+  ],
+  "_bin_search_note": "脚本会在这些目录 + 环境变量 $PATH 中搜索命令。如发现新加速卡 SDK 装在其他目录，添加到此列表即可。",
+
+  "bin_categories": {
+    "accelerator_smi": [
+      "nvidia-smi", "rocm-smi", "amd-smi",
+      "hy-smi", "dtk-smi", "rocminfo",
+      "xpu-smi", "xpu_smi", "xpuinfo",
+      "npu-smi", "ascend-dmi", "hccn_tool",
+      "ixsmi", "ts-smi", "iluvatar-smi",
+      "cnmon", "mlu-stat",
+      "biren-smi", "br-smi",
+      "mx-smi", "metax-smi", "mthreads-gmi",
+      "hl-smi", "habana-smi"
+    ],
+    "accelerator_toolkit": [
+      "nvcc", "rocm_agent_enumerator",
+      "xpu-ctk", "xpu-container-cli", "xpu-modprobe",
+      "ascend_install.info", "hccn_tool"
+    ],
+    "rdma_basic": [
+      "ibstat", "ibstatus", "ibv_devinfo", "ibv_devices",
+      "show_gids", "rdma", "perfquery"
+    ],
+    "rdma_perftest": [
+      "ib_read_bw", "ib_write_bw", "ib_send_bw",
+      "ib_read_lat", "ib_write_lat", "ib_send_lat",
+      "ib_atomic_bw", "ib_atomic_lat"
+    ],
+    "rdma_diag": [
+      "ibdiagnet", "ibhosts", "ibnodes", "iblinkinfo",
+      "ibping", "ibtracert", "ibportstate", "ibqueryerrors"
+    ],
+    "mellanox_mgmt": [
+      "mlxconfig", "mlxlink", "mlxfwmanager", "mlxcables",
+      "mlxreg", "mlxfwreset", "mlxprivhost"
+    ],
+    "ofed": ["ofed_info", "mst"],
+    "mpi": [
+      "mpirun", "mpiexec", "mpiexec.hydra",
+      "mpicc", "mpichversion", "ompi_info", "orterun",
+      "mpirun.mpich"
+    ],
+    "scheduler": [
+      "sbatch", "squeue", "sinfo", "scontrol", "srun", "salloc",
+      "qsub", "qstat", "qdel", "pbsnodes",
+      "bsub", "bqueues", "bjobs"
+    ],
+    "k8s": [
+      "kubectl", "kubeadm", "kubelet", "kube-proxy",
+      "k3s", "microk8s", "k0s", "helm",
+      "crictl", "etcdctl"
+    ],
+    "container_runtime": [
+      "docker", "containerd", "podman", "nerdctl",
+      "runc", "crio", "ctr", "buildah"
+    ],
+    "container_gpu_toolkit": [
+      "nvidia-ctk", "nvidia-container-cli",
+      "xpu-ctk", "xpu-container-cli", "xpu-container-toolkit",
+      "habana-container-cli",
+      "amdgpu-install", "rocm-docker",
+      "ix-container-runtime", "mx-container-toolkit"
+    ],
+    "collective_comms": [
+      "nccl-tests", "all_reduce_perf", "all_gather_perf",
+      "xccl_test", "hccl_test"
+    ],
+    "network_perf": [
+      "iperf3", "iperf", "qperf", "ethr", "netperf"
+    ],
+    "storage_perf": [
+      "fio", "hdparm", "iostat", "ioping", "dd"
+    ],
+    "system_info": [
+      "dmidecode", "lshw", "numactl",
+      "smartctl", "nvme", "multipath"
+    ]
+  },
+
+  "cpu_vendor_x86": {
+    "GenuineIntel": "Intel",
+    "AuthenticAMD": "AMD",
+    "HygonGenuine": "海光 (Hygon)",
+    "CentaurHauls": "兆芯 (Zhaoxin)",
+    "  Shanghai  ": "兆芯 (Zhaoxin)",
+    "VIA VIA VIA ": "VIA"
+  },
+  "cpu_model_keywords": [
+    {"match": "Kunpeng",  "vendor": "华为鲲鹏 (Kunpeng)",  "arch": "aarch64"},
+    {"match": "kirin",    "vendor": "华为麒麟 (Kirin)",    "arch": "aarch64"},
+    {"match": "Phytium",  "vendor": "飞腾 (Phytium)",       "arch": "aarch64"},
+    {"match": "FT-",      "vendor": "飞腾 (Phytium)",       "arch": "aarch64"},
+    {"match": "Neoverse", "vendor": "ARM Neoverse",         "arch": "aarch64"},
+    {"match": "Cortex",   "vendor": "ARM Cortex",           "arch": "aarch64"},
+    {"match": "Ampere",   "vendor": "Ampere Computing",     "arch": "aarch64"},
+    {"match": "Loongson", "vendor": "龙芯 (Loongson)",       "arch": "loongarch64"},
+    {"match": "LA",       "vendor": "龙芯 (Loongson)",       "arch": "loongarch64"},
+    {"match": "Sunway",   "vendor": "申威 (Sunway)",         "arch": "sw_64"},
+    {"match": "POWER",    "vendor": "IBM Power",            "arch": "ppc64le"},
+    {"match": "Power",    "vendor": "IBM Power",            "arch": "ppc64le"},
+    {"match": "SiFive",   "vendor": "SiFive",               "arch": "riscv64"},
+    {"match": "T-Head",   "vendor": "平头哥 (T-Head)",       "arch": "riscv64"},
+    {"match": "C9",       "vendor": "平头哥 (T-Head)",       "arch": "riscv64"}
+  ],
+
+  "accelerators": [
+    {
+      "id": "nvidia",
+      "display_name": "NVIDIA GPU",
+      "vendor": "NVIDIA",
+      "detect_smi": "nvidia-smi",
+      "detect_smi_keyword": "NVIDIA",
+      "lspci_pattern": "10de:|nvidia",
+      "queries": {
+        "overview":  "nvidia-smi 2>/dev/null",
+        "csv":       "nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap,power.limit,clocks.max.sm --format=csv,noheader 2>/dev/null",
+        "mem_mib":   "nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null",
+        "name_only": "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1",
+        "topo":      "nvidia-smi topo -m 2>/dev/null",
+        "driver":    "nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1"
+      },
+      "frameworks": [
+        "vLLM (首选)", "SGLang", "LMDeploy", "TensorRT-LLM"
+      ],
+      "model_specs": [
+        {"match": "B200",      "bf16_tflops": 2250, "int8_tops": 4500, "hbm_gb": 192, "hbm_bw_tbps": 8.0,  "tdp_w": 1000, "pcie": "SXM6",        "interconnect": "NVLink 5.0 1.8TB/s"},
+        {"match": "B100",      "bf16_tflops": 1800, "int8_tops": 3500, "hbm_gb": 192, "hbm_bw_tbps": 8.0,  "tdp_w": 700,  "pcie": "SXM6",        "interconnect": "NVLink 5.0 1.8TB/s"},
+        {"match": "H200",      "bf16_tflops": 989,  "int8_tops": 1979, "hbm_gb": 141, "hbm_bw_tbps": 4.8,  "tdp_w": 700,  "pcie": "SXM5",        "interconnect": "NVLink 4.0 900GB/s"},
+        {"match": "H100",      "bf16_tflops": 989,  "int8_tops": 1979, "hbm_gb": 80,  "hbm_bw_tbps": 3.35, "tdp_w": 700,  "pcie": "SXM5/PCIe 5", "interconnect": "NVLink 4.0 900GB/s"},
+        {"match": "H800",      "bf16_tflops": 989,  "int8_tops": 1979, "hbm_gb": 80,  "hbm_bw_tbps": 3.35, "tdp_w": 700,  "pcie": "SXM5",        "interconnect": "NVLink 4.0 400GB/s (限速)"},
+        {"match": "H20",       "bf16_tflops": 148,  "int8_tops": 296,  "hbm_gb": 96,  "hbm_bw_tbps": 4.0,  "tdp_w": 400,  "pcie": "SXM5",        "interconnect": "NVLink 900GB/s"},
+        {"match": "A100",      "bf16_tflops": 312,  "int8_tops": 624,  "hbm_gb": 80,  "hbm_bw_tbps": 2.0,  "tdp_w": 400,  "pcie": "SXM4/PCIe 4", "interconnect": "NVLink 3.0 600GB/s"},
+        {"match": "A800",      "bf16_tflops": 312,  "int8_tops": 624,  "hbm_gb": 80,  "hbm_bw_tbps": 2.0,  "tdp_w": 400,  "pcie": "SXM4",        "interconnect": "NVLink 400GB/s (限速)"},
+        {"match": "L40S",      "bf16_tflops": 362,  "int8_tops": 733,  "hbm_gb": 48,  "hbm_bw_tbps": 0.864,"tdp_w": 350,  "pcie": "PCIe 4.0 x16","interconnect": "PCIe only"},
+        {"match": "L40",       "bf16_tflops": 181,  "int8_tops": 362,  "hbm_gb": 48,  "hbm_bw_tbps": 0.864,"tdp_w": 300,  "pcie": "PCIe 4.0 x16","interconnect": "PCIe only"},
+        {"match": "L20",       "bf16_tflops": 119,  "int8_tops": 239,  "hbm_gb": 48,  "hbm_bw_tbps": 0.864,"tdp_w": 275,  "pcie": "PCIe 4.0 x16","interconnect": "PCIe only"},
+        {"match": "L4",        "bf16_tflops": 121,  "int8_tops": 242,  "hbm_gb": 24,  "hbm_bw_tbps": 0.300,"tdp_w": 72,   "pcie": "PCIe 4.0 x16","interconnect": "PCIe only"},
+        {"match": "V100",      "bf16_tflops": 125,  "int8_tops": 0,    "hbm_gb": 32,  "hbm_bw_tbps": 0.9,  "tdp_w": 300,  "pcie": "SXM2",        "interconnect": "NVLink 2.0 300GB/s"},
+        {"match": "T4",        "bf16_tflops": 65,   "int8_tops": 130,  "hbm_gb": 16,  "hbm_bw_tbps": 0.32, "tdp_w": 70,   "pcie": "PCIe 3.0 x16","interconnect": "PCIe only"},
+        {"match": "RTX 5090",  "bf16_tflops": 419,  "int8_tops": 838,  "hbm_gb": 32,  "hbm_bw_tbps": 1.79, "tdp_w": 575,  "pcie": "PCIe 5.0 x16","interconnect": "PCIe only"},
+        {"match": "RTX 4090",  "bf16_tflops": 330,  "int8_tops": 660,  "hbm_gb": 24,  "hbm_bw_tbps": 1.01, "tdp_w": 450,  "pcie": "PCIe 4.0 x16","interconnect": "PCIe only"},
+        {"match": "RTX 3090",  "bf16_tflops": 142,  "int8_tops": 285,  "hbm_gb": 24,  "hbm_bw_tbps": 0.936,"tdp_w": 350,  "pcie": "PCIe 4.0 x16","interconnect": "PCIe only"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 0, "int8_tops": 0, "hbm_gb": 0, "hbm_bw_tbps": 0, "tdp_w": 0,
+        "pcie": "未知", "interconnect": "未知"
+      }
+    },
+    {
+      "id": "amd",
+      "display_name": "AMD GPU (ROCm)",
+      "vendor": "AMD",
+      "detect_smi": "rocm-smi",
+      "detect_smi_alt": "amd-smi",
+      "detect_smi_keyword": "GPU",
+      "lspci_pattern": "1002:|advanced micro|amd.*display",
+      "queries": {
+        "overview": "rocm-smi 2>/dev/null || amd-smi list 2>/dev/null",
+        "name":     "rocm-smi --showproductname 2>/dev/null || amd-smi static --asic 2>/dev/null | grep -i 'name\\|market'",
+        "mem":      "rocm-smi --showmeminfo vram 2>/dev/null || amd-smi metric --mem-usage 2>/dev/null",
+        "count":    "rocm-smi -i --csv 2>/dev/null | grep -c '^card' || ls /sys/class/drm/card*/device/vendor 2>/dev/null | xargs -I{} grep -l '0x1002' {} 2>/dev/null | wc -l",
+        "driver":   "cat /sys/module/amdgpu/version 2>/dev/null; cat /opt/rocm/.info/version 2>/dev/null"
+      },
+      "frameworks": ["vLLM-ROCm", "SGLang-ROCm", "LMDeploy-ROCm", "llama.cpp"],
+      "model_specs": [
+        {"match": "MI325X",  "bf16_tflops": 1307, "int8_tops": 2614, "hbm_gb": 256, "hbm_bw_tbps": 6.0,  "tdp_w": 1000, "pcie": "OAM", "interconnect": "Infinity Fabric 896GB/s"},
+        {"match": "MI300X",  "bf16_tflops": 1307, "int8_tops": 2614, "hbm_gb": 192, "hbm_bw_tbps": 5.3,  "tdp_w": 750,  "pcie": "OAM", "interconnect": "Infinity Fabric 896GB/s"},
+        {"match": "MI300A",  "bf16_tflops": 980,  "int8_tops": 1960, "hbm_gb": 128, "hbm_bw_tbps": 5.3,  "tdp_w": 760,  "pcie": "APU", "interconnect": "Infinity Fabric"},
+        {"match": "MI250X",  "bf16_tflops": 383,  "int8_tops": 383,  "hbm_gb": 128, "hbm_bw_tbps": 3.2,  "tdp_w": 560,  "pcie": "OAM", "interconnect": "Infinity Fabric 800GB/s"},
+        {"match": "MI250",   "bf16_tflops": 362,  "int8_tops": 362,  "hbm_gb": 128, "hbm_bw_tbps": 3.2,  "tdp_w": 560,  "pcie": "OAM", "interconnect": "Infinity Fabric"},
+        {"match": "MI210",   "bf16_tflops": 181,  "int8_tops": 181,  "hbm_gb": 64,  "hbm_bw_tbps": 1.6,  "tdp_w": 300,  "pcie": "PCIe 4.0", "interconnect": "Infinity Fabric"},
+        {"match": "MI100",   "bf16_tflops": 92,   "int8_tops": 92,   "hbm_gb": 32,  "hbm_bw_tbps": 1.2,  "tdp_w": 300,  "pcie": "PCIe 4.0", "interconnect": "Infinity Fabric"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 0, "int8_tops": 0, "hbm_gb": 0, "hbm_bw_tbps": 0, "tdp_w": 0,
+        "pcie": "未知", "interconnect": "Infinity Fabric"
+      }
+    },
+    {
+      "id": "hygon",
+      "display_name": "海光 DCU",
+      "vendor": "海光 (Hygon)",
+      "detect_smi": "hy-smi",
+      "detect_smi_alt": "dtk-smi",
+      "detect_smi_keyword": "DCU",
+      "lspci_pattern": "1d94:|hygon",
+      "queries": {
+        "overview": "hy-smi 2>/dev/null",
+        "name":     "hy-smi --showproductname 2>/dev/null",
+        "mem":      "hy-smi --showmeminfo vram 2>/dev/null",
+        "count":    "hy-smi -i 2>/dev/null | grep -c 'DCU'",
+        "driver":   "cat /opt/dtk/.info/version 2>/dev/null"
+      },
+      "frameworks": ["vLLM-DTK", "PaddleNLP-DCU", "llama.cpp", "DeepSeek-DCU"],
+      "model_specs": [
+        {"match": "K100-AI", "bf16_tflops": 192, "int8_tops": 384, "hbm_gb": 64, "hbm_bw_tbps": 1.4, "tdp_w": 350, "pcie": "PCIe 5.0", "interconnect": "Hygon Link"},
+        {"match": "K100",    "bf16_tflops": 96,  "int8_tops": 192, "hbm_gb": 64, "hbm_bw_tbps": 1.2, "tdp_w": 300, "pcie": "PCIe 4.0", "interconnect": "Hygon Link"},
+        {"match": "Z100L",   "bf16_tflops": 56,  "int8_tops": 112, "hbm_gb": 32, "hbm_bw_tbps": 0.8, "tdp_w": 250, "pcie": "PCIe 4.0", "interconnect": "Hygon Link"},
+        {"match": "Z100",    "bf16_tflops": 48,  "int8_tops": 96,  "hbm_gb": 32, "hbm_bw_tbps": 0.8, "tdp_w": 250, "pcie": "PCIe 4.0", "interconnect": "Hygon Link"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 96, "int8_tops": 192, "hbm_gb": 64, "hbm_bw_tbps": 1.2, "tdp_w": 300,
+        "pcie": "PCIe 4.0/5.0", "interconnect": "Hygon Link"
+      }
+    },
+    {
+      "id": "kunlun",
+      "display_name": "昆仑芯 XPU",
+      "vendor": "百度昆仑芯 (Kunlunxin)",
+      "detect_smi": "xpu-smi",
+      "detect_smi_alt": "xpu_smi",
+      "detect_smi_keyword": "XPU",
+      "lspci_pattern": "1d22:|2057:|kunlun",
+      "queries": {
+        "overview": "xpu-smi 2>/dev/null",
+        "query":    "xpu-smi -q 2>/dev/null",
+        "lspci":    "lspci -d 1d22: 2>/dev/null; lspci -d 2057: 2>/dev/null",
+        "driver":   "xpu-smi -q 2>/dev/null | grep -E 'Driver Version|XPU-RT Version' | head -3"
+      },
+      "frameworks": [
+        "PaddleNLP + PaddlePaddle-XPU (首选)",
+        "vLLM-XPU 分支", "FastDeploy", "llama.cpp XPU 后端"
+      ],
+      "model_specs": [
+        {"match": "P800",   "bf16_tflops": 256, "int8_tops": 512, "hbm_gb": 96,  "hbm_bw_tbps": 1.2,  "tdp_w": 400, "pcie": "PCIe 5.0 x16", "interconnect": "XPU Link / XCCL"},
+        {"match": "R200",   "bf16_tflops": 128, "int8_tops": 256, "hbm_gb": 32,  "hbm_bw_tbps": 0.512,"tdp_w": 300, "pcie": "PCIe 4.0 x16", "interconnect": "XPU Link"},
+        {"match": "R200-8F","bf16_tflops": 128, "int8_tops": 256, "hbm_gb": 32,  "hbm_bw_tbps": 0.512,"tdp_w": 300, "pcie": "PCIe 4.0 x16", "interconnect": "XPU Link"},
+        {"match": "K200",   "bf16_tflops": 64,  "int8_tops": 128, "hbm_gb": 16,  "hbm_bw_tbps": 0.4,  "tdp_w": 150, "pcie": "PCIe 4.0",     "interconnect": "PCIe"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 256, "int8_tops": 512, "hbm_gb": 96, "hbm_bw_tbps": 1.2, "tdp_w": 400,
+        "pcie": "PCIe 5.0 x16", "interconnect": "XPU Link / XCCL"
+      }
+    },
+    {
+      "id": "ascend",
+      "display_name": "华为昇腾 NPU",
+      "vendor": "华为 (Huawei)",
+      "detect_smi": "npu-smi",
+      "detect_smi_keyword": "NPU",
+      "lspci_pattern": "19e5:|ascend|huawei.*acceler",
+      "queries": {
+        "overview": "npu-smi info 2>/dev/null",
+        "topo":     "npu-smi info -t topo 2>/dev/null | head -30",
+        "mem":      "npu-smi info -t memory -i 0 2>/dev/null",
+        "board":    "npu-smi info -t board -i 0 2>/dev/null"
+      },
+      "frameworks": [
+        "MindIE (首选)", "LMDeploy-Ascend",
+        "vLLM-Ascend", "MindSpore Lite"
+      ],
+      "model_specs": [
+        {"match": "910C",   "bf16_tflops": 752, "int8_tops": 1504, "hbm_gb": 128, "hbm_bw_tbps": 3.2,  "tdp_w": 550, "pcie": "PCIe 5.0",  "interconnect": "HCCS + HCCL 2.0"},
+        {"match": "910B4",  "bf16_tflops": 280, "int8_tops": 560,  "hbm_gb": 32,  "hbm_bw_tbps": 0.8,  "tdp_w": 300, "pcie": "PCIe 4.0",  "interconnect": "HCCS"},
+        {"match": "910B3",  "bf16_tflops": 280, "int8_tops": 560,  "hbm_gb": 64,  "hbm_bw_tbps": 1.6,  "tdp_w": 350, "pcie": "PCIe 4.0",  "interconnect": "HCCS Mesh"},
+        {"match": "910B",   "bf16_tflops": 320, "int8_tops": 640,  "hbm_gb": 64,  "hbm_bw_tbps": 1.6,  "tdp_w": 392, "pcie": "PCIe 5.0",  "interconnect": "HCCS Mesh + HCCL"},
+        {"match": "910A",   "bf16_tflops": 256, "int8_tops": 512,  "hbm_gb": 32,  "hbm_bw_tbps": 1.2,  "tdp_w": 310, "pcie": "PCIe 4.0",  "interconnect": "HCCS"},
+        {"match": "910",    "bf16_tflops": 320, "int8_tops": 640,  "hbm_gb": 32,  "hbm_bw_tbps": 1.2,  "tdp_w": 310, "pcie": "PCIe 4.0",  "interconnect": "HCCS"},
+        {"match": "310P",   "bf16_tflops": 22,  "int8_tops": 88,   "hbm_gb": 24,  "hbm_bw_tbps": 0.2,  "tdp_w": 72,  "pcie": "PCIe 4.0",  "interconnect": "PCIe only"},
+        {"match": "310",    "bf16_tflops": 8,   "int8_tops": 16,   "hbm_gb": 8,   "hbm_bw_tbps": 0.05, "tdp_w": 8,   "pcie": "PCIe 3.0",  "interconnect": "PCIe only"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 320, "int8_tops": 640, "hbm_gb": 64, "hbm_bw_tbps": 1.6, "tdp_w": 392,
+        "pcie": "PCIe 5.0", "interconnect": "HCCS + HCCL"
+      }
+    },
+    {
+      "id": "iluvatar",
+      "display_name": "天数智芯 GPU",
+      "vendor": "天数智芯 (Iluvatar CoreX)",
+      "detect_smi": "ixsmi",
+      "detect_smi_alt": "iluvatar-smi",
+      "detect_smi_keyword": "Iluvatar",
+      "lspci_pattern": "1e3e:|iluvatar",
+      "queries": {
+        "overview": "ixsmi 2>/dev/null"
+      },
+      "frameworks": ["ixFormer", "vLLM-天数适配版", "DeepSpark"],
+      "model_specs": [
+        {"match": "BI-V150", "bf16_tflops": 192, "int8_tops": 384, "hbm_gb": 32, "hbm_bw_tbps": 1.2, "tdp_w": 350, "pcie": "PCIe 5.0", "interconnect": "PCIe + Custom"},
+        {"match": "BI-V100", "bf16_tflops": 147, "int8_tops": 295, "hbm_gb": 32, "hbm_bw_tbps": 1.2, "tdp_w": 300, "pcie": "PCIe 4.0", "interconnect": "PCIe"},
+        {"match": "MR-V100", "bf16_tflops": 80,  "int8_tops": 160, "hbm_gb": 16, "hbm_bw_tbps": 0.5, "tdp_w": 250, "pcie": "PCIe 4.0", "interconnect": "PCIe"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 147, "int8_tops": 295, "hbm_gb": 32, "hbm_bw_tbps": 1.2, "tdp_w": 300,
+        "pcie": "PCIe 4.0/5.0", "interconnect": "PCIe"
+      }
+    },
+    {
+      "id": "cambricon",
+      "display_name": "寒武纪 MLU",
+      "vendor": "寒武纪 (Cambricon)",
+      "detect_smi": "cnmon",
+      "detect_smi_alt": "mlu-stat",
+      "detect_smi_keyword": "MLU",
+      "lspci_pattern": "cabc:|cambricon",
+      "queries": {
+        "overview": "cnmon 2>/dev/null",
+        "info":     "cnmon info 2>/dev/null | head -60"
+      },
+      "frameworks": ["Cambricon MLU SDK", "vLLM-寒武纪适配版", "MagicMind"],
+      "model_specs": [
+        {"match": "MLU590-M9", "bf16_tflops": 256, "int8_tops": 512, "hbm_gb": 48, "hbm_bw_tbps": 1.2, "tdp_w": 350, "pcie": "PCIe 5.0", "interconnect": "MLU-Link"},
+        {"match": "MLU590",    "bf16_tflops": 256, "int8_tops": 512, "hbm_gb": 48, "hbm_bw_tbps": 1.2, "tdp_w": 350, "pcie": "PCIe 5.0", "interconnect": "MLU-Link"},
+        {"match": "MLU370-X8", "bf16_tflops": 96,  "int8_tops": 256, "hbm_gb": 48, "hbm_bw_tbps": 0.614,"tdp_w": 250, "pcie": "PCIe 4.0", "interconnect": "MLU-Link"},
+        {"match": "MLU370-M8", "bf16_tflops": 96,  "int8_tops": 256, "hbm_gb": 48, "hbm_bw_tbps": 0.614,"tdp_w": 250, "pcie": "PCIe 4.0", "interconnect": "MLU-Link"},
+        {"match": "MLU370",    "bf16_tflops": 96,  "int8_tops": 256, "hbm_gb": 24, "hbm_bw_tbps": 0.307,"tdp_w": 150, "pcie": "PCIe 4.0", "interconnect": "PCIe"},
+        {"match": "MLU290",    "bf16_tflops": 0,   "int8_tops": 512, "hbm_gb": 32, "hbm_bw_tbps": 1.23, "tdp_w": 350, "pcie": "PCIe 4.0", "interconnect": "MLU-Link"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 96, "int8_tops": 256, "hbm_gb": 48, "hbm_bw_tbps": 0.614, "tdp_w": 250,
+        "pcie": "PCIe 4.0/5.0", "interconnect": "MLU-Link"
+      }
+    },
+    {
+      "id": "biren",
+      "display_name": "壁仞 GPU",
+      "vendor": "壁仞科技 (Biren)",
+      "detect_smi": "biren-smi",
+      "detect_smi_alt": "br-smi",
+      "detect_smi_keyword": "Biren",
+      "lspci_pattern": "1ec9:|biren",
+      "queries": {
+        "overview": "biren-smi 2>/dev/null || br-smi 2>/dev/null"
+      },
+      "frameworks": ["BIRENSUPA", "suBR-LLM"],
+      "model_specs": [
+        {"match": "BR104", "bf16_tflops": 128, "int8_tops": 1024, "hbm_gb": 32, "hbm_bw_tbps": 0.819, "tdp_w": 300, "pcie": "PCIe 5.0", "interconnect": "BLink"},
+        {"match": "BR100", "bf16_tflops": 256, "int8_tops": 2048, "hbm_gb": 64, "hbm_bw_tbps": 1.64,  "tdp_w": 550, "pcie": "OAM",      "interconnect": "BLink 2.3TB/s"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 256, "int8_tops": 2048, "hbm_gb": 64, "hbm_bw_tbps": 1.64, "tdp_w": 550,
+        "pcie": "OAM", "interconnect": "BLink"
+      }
+    },
+    {
+      "id": "metax",
+      "display_name": "沐曦 GPU",
+      "vendor": "沐曦集成电路 (MetaX)",
+      "detect_smi": "mx-smi",
+      "detect_smi_alt": "metax-smi",
+      "detect_smi_keyword": "MetaX",
+      "lspci_pattern": "9999:|metax",
+      "queries": {
+        "overview": "mx-smi 2>/dev/null"
+      },
+      "frameworks": ["MACA", "vLLM-MetaX 适配版"],
+      "model_specs": [
+        {"match": "C500", "bf16_tflops": 245, "int8_tops": 490, "hbm_gb": 64, "hbm_bw_tbps": 1.55, "tdp_w": 350, "pcie": "PCIe 5.0", "interconnect": "MetaXLink"},
+        {"match": "C280", "bf16_tflops": 122, "int8_tops": 245, "hbm_gb": 32, "hbm_bw_tbps": 0.8,  "tdp_w": 300, "pcie": "PCIe 4.0", "interconnect": "PCIe"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 245, "int8_tops": 490, "hbm_gb": 64, "hbm_bw_tbps": 1.55, "tdp_w": 350,
+        "pcie": "PCIe 5.0", "interconnect": "MetaXLink"
+      }
+    },
+    {
+      "id": "moorethreads",
+      "display_name": "摩尔线程 GPU",
+      "vendor": "摩尔线程 (Moore Threads)",
+      "detect_smi": "mthreads-gmi",
+      "detect_smi_keyword": "MTT",
+      "lspci_pattern": "1ed5:|moore",
+      "queries": {
+        "overview": "mthreads-gmi 2>/dev/null"
+      },
+      "frameworks": ["MUSA", "vLLM-MUSA 适配版"],
+      "model_specs": [
+        {"match": "S4000", "bf16_tflops": 100, "int8_tops": 200, "hbm_gb": 48, "hbm_bw_tbps": 0.768, "tdp_w": 350, "pcie": "PCIe 5.0", "interconnect": "MTLink"},
+        {"match": "S3000", "bf16_tflops": 50,  "int8_tops": 100, "hbm_gb": 32, "hbm_bw_tbps": 0.5,   "tdp_w": 300, "pcie": "PCIe 4.0", "interconnect": "PCIe"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 100, "int8_tops": 200, "hbm_gb": 48, "hbm_bw_tbps": 0.768, "tdp_w": 350,
+        "pcie": "PCIe 5.0", "interconnect": "MTLink"
+      }
+    },
+    {
+      "id": "habana",
+      "display_name": "Intel Gaudi",
+      "vendor": "Intel Habana Labs",
+      "detect_smi": "hl-smi",
+      "detect_smi_alt": "habana-smi",
+      "detect_smi_keyword": "HL-",
+      "lspci_pattern": "1da3:|habana",
+      "queries": {
+        "overview": "hl-smi 2>/dev/null",
+        "query":    "hl-smi -q 2>/dev/null | head -120"
+      },
+      "frameworks": ["SynapseAI", "vLLM-HPU", "Optimum Habana"],
+      "model_specs": [
+        {"match": "HL-325", "bf16_tflops": 1835, "int8_tops": 3672, "hbm_gb": 128, "hbm_bw_tbps": 3.7,  "tdp_w": 900, "pcie": "OAM",  "interconnect": "24×200Gb RoCE"},
+        {"match": "Gaudi3", "bf16_tflops": 1835, "int8_tops": 3672, "hbm_gb": 128, "hbm_bw_tbps": 3.7,  "tdp_w": 900, "pcie": "OAM",  "interconnect": "24×200Gb RoCE"},
+        {"match": "HL-225", "bf16_tflops": 432,  "int8_tops": 865,  "hbm_gb": 96,  "hbm_bw_tbps": 2.45, "tdp_w": 600, "pcie": "OAM",  "interconnect": "24×100Gb RoCE"},
+        {"match": "Gaudi2", "bf16_tflops": 432,  "int8_tops": 865,  "hbm_gb": 96,  "hbm_bw_tbps": 2.45, "tdp_w": 600, "pcie": "OAM",  "interconnect": "24×100Gb RoCE"}
+      ],
+      "default_spec": {
+        "bf16_tflops": 432, "int8_tops": 865, "hbm_gb": 96, "hbm_bw_tbps": 2.45, "tdp_w": 600,
+        "pcie": "OAM", "interconnect": "RoCE Mesh"
+      }
+    }
+  ],
+
+  "models_2026": [
+    {
+      "name": "Qwen3.6 满血版 (235B)", "vendor": "Alibaba", "params": "235B(MoE)",
+      "active": "~22B", "context": "256K",
+      "fp16_gb": 470, "int4_gb": 60,
+      "frameworks": ["vLLM", "SGLang", "LMDeploy"],
+      "accel_support": ["NVIDIA", "昆仑", "AMD"],
+      "notes": "旗舰开源 MoE，综合能力对标 GPT-5"
+    },
+    {
+      "name": "Qwen3.6-35B-A3B (Flash)", "vendor": "Alibaba", "params": "35B(MoE)",
+      "active": "3B", "context": "262K",
+      "fp16_gb": 70, "int4_gb": 18,
+      "frameworks": ["vLLM", "SGLang", "LMDeploy", "llama.cpp"],
+      "accel_support": ["NVIDIA", "昆仑", "AMD", "海光", "CPU"],
+      "notes": "激活仅3B，单卡可跑，性价比极高"
+    },
+    {
+      "name": "Qwen3.6-27B", "vendor": "Alibaba", "params": "27B(Dense)",
+      "active": "27B", "context": "128K",
+      "fp16_gb": 54, "int4_gb": 14,
+      "frameworks": ["vLLM", "SGLang", "LMDeploy", "llama.cpp", "PaddleNLP"],
+      "accel_support": ["NVIDIA", "昆仑", "AMD", "海光", "昇腾", "CPU"],
+      "notes": "稠密模型，国产卡适配最完整"
+    },
+    {
+      "name": "DeepSeek-V4-Flash", "vendor": "DeepSeek", "params": "284B(MoE)",
+      "active": "13B", "context": "1M",
+      "fp16_gb": 568, "int4_gb": 72,
+      "frameworks": ["vLLM", "SGLang", "LMDeploy"],
+      "accel_support": ["NVIDIA", "AMD", "昆仑", "海光"],
+      "notes": "1M 上下文，单机8卡可承载"
+    },
+    {
+      "name": "GLM-5.1", "vendor": "Zhipu AI", "params": "754B(MoE)",
+      "active": "~40B", "context": "128K",
+      "fp16_gb": 1508, "int4_gb": 200,
+      "frameworks": ["vLLM", "LMDeploy"],
+      "accel_support": ["NVIDIA"],
+      "notes": "MIT License，需双机16卡部署"
+    },
+    {
+      "name": "Kimi-K2.6", "vendor": "Moonshot AI", "params": "~236B(MoE)",
+      "active": "~32B", "context": "256K",
+      "fp16_gb": 472, "int4_gb": 64,
+      "frameworks": ["vLLM", "SGLang"],
+      "accel_support": ["NVIDIA"],
+      "notes": "超长上下文推理优秀"
+    },
+    {
+      "name": "MiniMax-M2.7", "vendor": "MiniMax", "params": "~460B(MoE)",
+      "active": "~45B", "context": "1M",
+      "fp16_gb": 920, "int4_gb": 120,
+      "frameworks": ["vLLM"],
+      "accel_support": ["NVIDIA"],
+      "notes": "百万 Token MoE"
+    }
+  ],
+  "_models_note": "上述为 2026 年开源 LLM 主流清单，仅作部署可行性参考。实际型号/参数请以发布日为准。",
+
+  "scenario_templates": [
+    {
+      "id": "single_card",
+      "name": "单卡推理 (TP=1)",
+      "min_cards": 1,
+      "tp_recipe": "TP=1",
+      "match_models_by_fp16": {"max_gb_per_card_ratio": 0.85},
+      "use_case": "中小规模在线服务、长尾应用、内部工具",
+      "notes": "适用于单卡显存 ≥ 模型权重 + KV Cache 的场景"
+    },
+    {
+      "id": "single_node_8",
+      "name": "单机 8 卡部署 (TP=8)",
+      "min_cards": 8,
+      "max_cards": 8,
+      "tp_recipe": "TP=8",
+      "match_models_by_fp16": {"max_gb_total_ratio": 0.80},
+      "use_case": "中大型生产服务、SaaS 服务、企业级 RAG",
+      "notes": "节点内全互联，无跨机延迟，吞吐峰值"
+    },
+    {
+      "id": "multi_node_16",
+      "name": "双机 16 卡部署 (TP=8 × PP=2 或 TP=16)",
+      "_note": "min_cards 表示单节点卡数门槛，实际并行卡数 = 当前节点 × 2",
+      "min_cards": 8,
+      "tp_recipe": "TP=8 × PP=2",
+      "match_models_by_fp16": {"max_gb_total_ratio": 0.85},
+      "prerequisites": [
+        "节点间 RDMA 已 ACTIVE",
+        "MPI/NCCL/XCCL 多节点配置完成",
+        "GPUDirect RDMA 启用",
+        "Slurm 或 Kubernetes 多节点编排"
+      ],
+      "use_case": "超大模型服务、混合精度训练 + 推理一体化集群"
+    }
+  ]
+}

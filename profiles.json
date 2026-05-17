@@ -180,16 +180,17 @@
       },
       "frameworks": ["vLLM-ROCm", "SGLang-ROCm", "LMDeploy-ROCm", "llama.cpp"],
       "model_specs": [
-        {"match": "MI325X",  "bf16_tflops": 1307, "int8_tops": 2614, "hbm_gb": 256, "hbm_bw_tbps": 6.0,  "tdp_w": 1000, "pcie": "OAM", "interconnect": "Infinity Fabric 896GB/s"},
-        {"match": "MI300X",  "bf16_tflops": 1307, "int8_tops": 2614, "hbm_gb": 192, "hbm_bw_tbps": 5.3,  "tdp_w": 750,  "pcie": "OAM", "interconnect": "Infinity Fabric 896GB/s"},
-        {"match": "MI300A",  "bf16_tflops": 980,  "int8_tops": 1960, "hbm_gb": 128, "hbm_bw_tbps": 5.3,  "tdp_w": 760,  "pcie": "APU", "interconnect": "Infinity Fabric"},
-        {"match": "MI250X",  "bf16_tflops": 383,  "int8_tops": 383,  "hbm_gb": 128, "hbm_bw_tbps": 3.2,  "tdp_w": 560,  "pcie": "OAM", "interconnect": "Infinity Fabric 800GB/s"},
-        {"match": "MI250",   "bf16_tflops": 362,  "int8_tops": 362,  "hbm_gb": 128, "hbm_bw_tbps": 3.2,  "tdp_w": 560,  "pcie": "OAM", "interconnect": "Infinity Fabric"},
-        {"match": "MI210",   "bf16_tflops": 181,  "int8_tops": 181,  "hbm_gb": 64,  "hbm_bw_tbps": 1.6,  "tdp_w": 300,  "pcie": "PCIe 4.0", "interconnect": "Infinity Fabric"},
-        {"match": "MI100",   "bf16_tflops": 92,   "int8_tops": 92,   "hbm_gb": 32,  "hbm_bw_tbps": 1.2,  "tdp_w": 300,  "pcie": "PCIe 4.0", "interconnect": "Infinity Fabric"}
+        {"match": "MI325X",  "bf16_tflops": 1307, "int8_tops": 2614, "hbm_gb": 256, "hbm_bw_tbps": 6.0,  "tdp_w": 1000, "pcie": "OAM", "interconnect": "Infinity Fabric 896GB/s", "nvidia_equivalent": {"card": "H100-80GB-SXM", "perf_ratio": 0.90}},
+        {"match": "MI300X",  "bf16_tflops": 1307, "int8_tops": 2614, "hbm_gb": 192, "hbm_bw_tbps": 5.3,  "tdp_w": 750,  "pcie": "OAM", "interconnect": "Infinity Fabric 896GB/s", "nvidia_equivalent": {"card": "H100-80GB-SXM", "perf_ratio": 0.85, "note": "AMD MI300X 对标 H100，ROCm 优化后约 85%"}},
+        {"match": "MI300A",  "bf16_tflops": 980,  "int8_tops": 1960, "hbm_gb": 128, "hbm_bw_tbps": 5.3,  "tdp_w": 760,  "pcie": "APU", "interconnect": "Infinity Fabric", "nvidia_equivalent": {"card": "H100-80GB-SXM", "perf_ratio": 0.70}},
+        {"match": "MI250X",  "bf16_tflops": 383,  "int8_tops": 383,  "hbm_gb": 128, "hbm_bw_tbps": 3.2,  "tdp_w": 560,  "pcie": "OAM", "interconnect": "Infinity Fabric 800GB/s", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.80}},
+        {"match": "MI250",   "bf16_tflops": 362,  "int8_tops": 362,  "hbm_gb": 128, "hbm_bw_tbps": 3.2,  "tdp_w": 560,  "pcie": "OAM", "interconnect": "Infinity Fabric", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.75}},
+        {"match": "MI210",   "bf16_tflops": 181,  "int8_tops": 181,  "hbm_gb": 64,  "hbm_bw_tbps": 1.6,  "tdp_w": 300,  "pcie": "PCIe 4.0", "interconnect": "Infinity Fabric", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.50}},
+        {"match": "MI100",   "bf16_tflops": 92,   "int8_tops": 92,   "hbm_gb": 32,  "hbm_bw_tbps": 1.2,  "tdp_w": 300,  "pcie": "PCIe 4.0", "interconnect": "Infinity Fabric", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.30}}
       ],
       "default_spec": {
         "bf16_tflops": 0, "int8_tops": 0, "hbm_gb": 0, "hbm_bw_tbps": 0, "tdp_w": 0,
+        "nvidia_equivalent": {"card": "H100-80GB-SXM", "perf_ratio": 0.70},
         "pcie": "未知", "interconnect": "Infinity Fabric"
       }
     },
@@ -210,13 +211,14 @@
       },
       "frameworks": ["vLLM-DTK", "PaddleNLP-DCU", "llama.cpp", "DeepSeek-DCU"],
       "model_specs": [
-        {"match": "K100-AI", "bf16_tflops": 192, "int8_tops": 384, "hbm_gb": 64, "hbm_bw_tbps": 1.4, "tdp_w": 350, "pcie": "PCIe 5.0", "interconnect": "Hygon Link"},
-        {"match": "K100",    "bf16_tflops": 96,  "int8_tops": 192, "hbm_gb": 64, "hbm_bw_tbps": 1.2, "tdp_w": 300, "pcie": "PCIe 4.0", "interconnect": "Hygon Link"},
-        {"match": "Z100L",   "bf16_tflops": 56,  "int8_tops": 112, "hbm_gb": 32, "hbm_bw_tbps": 0.8, "tdp_w": 250, "pcie": "PCIe 4.0", "interconnect": "Hygon Link"},
-        {"match": "Z100",    "bf16_tflops": 48,  "int8_tops": 96,  "hbm_gb": 32, "hbm_bw_tbps": 0.8, "tdp_w": 250, "pcie": "PCIe 4.0", "interconnect": "Hygon Link"}
+        {"match": "K100-AI", "bf16_tflops": 192, "int8_tops": 384, "hbm_gb": 64, "hbm_bw_tbps": 1.4, "tdp_w": 350, "pcie": "PCIe 5.0", "interconnect": "Hygon Link", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.50, "note": "海光 K100-AI 实测约为 A100 50%"}},
+        {"match": "K100",    "bf16_tflops": 96,  "int8_tops": 192, "hbm_gb": 64, "hbm_bw_tbps": 1.2, "tdp_w": 300, "pcie": "PCIe 4.0", "interconnect": "Hygon Link", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.35, "note": "海光 K100 约为 A100 35%"}},
+        {"match": "Z100L",   "bf16_tflops": 56,  "int8_tops": 112, "hbm_gb": 32, "hbm_bw_tbps": 0.8, "tdp_w": 250, "pcie": "PCIe 4.0", "interconnect": "Hygon Link", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.25}},
+        {"match": "Z100",    "bf16_tflops": 48,  "int8_tops": 96,  "hbm_gb": 32, "hbm_bw_tbps": 0.8, "tdp_w": 250, "pcie": "PCIe 4.0", "interconnect": "Hygon Link", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.20}}
       ],
       "default_spec": {
         "bf16_tflops": 96, "int8_tops": 192, "hbm_gb": 64, "hbm_bw_tbps": 1.2, "tdp_w": 300,
+        "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.40},
         "pcie": "PCIe 4.0/5.0", "interconnect": "Hygon Link"
       }
     },
@@ -239,13 +241,14 @@
         "vLLM-XPU 分支", "FastDeploy", "llama.cpp XPU 后端"
       ],
       "model_specs": [
-        {"match": "P800",   "bf16_tflops": 256, "int8_tops": 512, "hbm_gb": 96,  "hbm_bw_tbps": 1.2,  "tdp_w": 400, "pcie": "PCIe 5.0 x16", "interconnect": "XPU Link / XCCL"},
-        {"match": "R200",   "bf16_tflops": 128, "int8_tops": 256, "hbm_gb": 32,  "hbm_bw_tbps": 0.512,"tdp_w": 300, "pcie": "PCIe 4.0 x16", "interconnect": "XPU Link"},
-        {"match": "R200-8F","bf16_tflops": 128, "int8_tops": 256, "hbm_gb": 32,  "hbm_bw_tbps": 0.512,"tdp_w": 300, "pcie": "PCIe 4.0 x16", "interconnect": "XPU Link"},
-        {"match": "K200",   "bf16_tflops": 64,  "int8_tops": 128, "hbm_gb": 16,  "hbm_bw_tbps": 0.4,  "tdp_w": 150, "pcie": "PCIe 4.0",     "interconnect": "PCIe"}
+        {"match": "P800",   "bf16_tflops": 256, "int8_tops": 512, "hbm_gb": 96,  "hbm_bw_tbps": 1.2,  "tdp_w": 400, "pcie": "PCIe 5.0 x16", "interconnect": "XPU Link / XCCL", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.60, "note": "昆仑芯 P800 实测约为 A100 60%（算力略低、HBM 大、带宽低）"}},
+        {"match": "R200",   "bf16_tflops": 128, "int8_tops": 256, "hbm_gb": 32,  "hbm_bw_tbps": 0.512,"tdp_w": 300, "pcie": "PCIe 4.0 x16", "interconnect": "XPU Link", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.30}},
+        {"match": "R200-8F","bf16_tflops": 128, "int8_tops": 256, "hbm_gb": 32,  "hbm_bw_tbps": 0.512,"tdp_w": 300, "pcie": "PCIe 4.0 x16", "interconnect": "XPU Link", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.30}},
+        {"match": "K200",   "bf16_tflops": 64,  "int8_tops": 128, "hbm_gb": 16,  "hbm_bw_tbps": 0.4,  "tdp_w": 150, "pcie": "PCIe 4.0",     "interconnect": "PCIe", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.18}}
       ],
       "default_spec": {
         "bf16_tflops": 256, "int8_tops": 512, "hbm_gb": 96, "hbm_bw_tbps": 1.2, "tdp_w": 400,
+        "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.60},
         "pcie": "PCIe 5.0 x16", "interconnect": "XPU Link / XCCL"
       }
     },
@@ -267,17 +270,18 @@
         "vLLM-Ascend", "MindSpore Lite"
       ],
       "model_specs": [
-        {"match": "910C",   "bf16_tflops": 752, "int8_tops": 1504, "hbm_gb": 128, "hbm_bw_tbps": 3.2,  "tdp_w": 550, "pcie": "PCIe 5.0",  "interconnect": "HCCS + HCCL 2.0"},
-        {"match": "910B4",  "bf16_tflops": 280, "int8_tops": 560,  "hbm_gb": 32,  "hbm_bw_tbps": 0.8,  "tdp_w": 300, "pcie": "PCIe 4.0",  "interconnect": "HCCS"},
-        {"match": "910B3",  "bf16_tflops": 280, "int8_tops": 560,  "hbm_gb": 64,  "hbm_bw_tbps": 1.6,  "tdp_w": 350, "pcie": "PCIe 4.0",  "interconnect": "HCCS Mesh"},
-        {"match": "910B",   "bf16_tflops": 320, "int8_tops": 640,  "hbm_gb": 64,  "hbm_bw_tbps": 1.6,  "tdp_w": 392, "pcie": "PCIe 5.0",  "interconnect": "HCCS Mesh + HCCL"},
-        {"match": "910A",   "bf16_tflops": 256, "int8_tops": 512,  "hbm_gb": 32,  "hbm_bw_tbps": 1.2,  "tdp_w": 310, "pcie": "PCIe 4.0",  "interconnect": "HCCS"},
-        {"match": "910",    "bf16_tflops": 320, "int8_tops": 640,  "hbm_gb": 32,  "hbm_bw_tbps": 1.2,  "tdp_w": 310, "pcie": "PCIe 4.0",  "interconnect": "HCCS"},
-        {"match": "310P",   "bf16_tflops": 22,  "int8_tops": 88,   "hbm_gb": 24,  "hbm_bw_tbps": 0.2,  "tdp_w": 72,  "pcie": "PCIe 4.0",  "interconnect": "PCIe only"},
-        {"match": "310",    "bf16_tflops": 8,   "int8_tops": 16,   "hbm_gb": 8,   "hbm_bw_tbps": 0.05, "tdp_w": 8,   "pcie": "PCIe 3.0",  "interconnect": "PCIe only"}
+        {"match": "910C",   "bf16_tflops": 752, "int8_tops": 1504, "hbm_gb": 128, "hbm_bw_tbps": 3.2,  "tdp_w": 550, "pcie": "PCIe 5.0",  "interconnect": "HCCS + HCCL 2.0", "nvidia_equivalent": {"card": "H100-80GB-SXM", "perf_ratio": 0.65, "note": "昇腾 910C 对标 H100，CANN 优化后约 65%"}},
+        {"match": "910B4",  "bf16_tflops": 280, "int8_tops": 560,  "hbm_gb": 32,  "hbm_bw_tbps": 0.8,  "tdp_w": 300, "pcie": "PCIe 4.0",  "interconnect": "HCCS", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.60}},
+        {"match": "910B3",  "bf16_tflops": 280, "int8_tops": 560,  "hbm_gb": 64,  "hbm_bw_tbps": 1.6,  "tdp_w": 350, "pcie": "PCIe 4.0",  "interconnect": "HCCS Mesh", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.70}},
+        {"match": "910B",   "bf16_tflops": 320, "int8_tops": 640,  "hbm_gb": 64,  "hbm_bw_tbps": 1.6,  "tdp_w": 392, "pcie": "PCIe 5.0",  "interconnect": "HCCS Mesh + HCCL", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.75, "note": "昇腾 910B 对标 A100，生态成熟约 75%"}},
+        {"match": "910A",   "bf16_tflops": 256, "int8_tops": 512,  "hbm_gb": 32,  "hbm_bw_tbps": 1.2,  "tdp_w": 310, "pcie": "PCIe 4.0",  "interconnect": "HCCS", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.55}},
+        {"match": "910",    "bf16_tflops": 320, "int8_tops": 640,  "hbm_gb": 32,  "hbm_bw_tbps": 1.2,  "tdp_w": 310, "pcie": "PCIe 4.0",  "interconnect": "HCCS", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.55}},
+        {"match": "310P",   "bf16_tflops": 22,  "int8_tops": 88,   "hbm_gb": 24,  "hbm_bw_tbps": 0.2,  "tdp_w": 72,  "pcie": "PCIe 4.0",  "interconnect": "PCIe only", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.08}},
+        {"match": "310",    "bf16_tflops": 8,   "int8_tops": 16,   "hbm_gb": 8,   "hbm_bw_tbps": 0.05, "tdp_w": 8,   "pcie": "PCIe 3.0",  "interconnect": "PCIe only", "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.03}}
       ],
       "default_spec": {
         "bf16_tflops": 320, "int8_tops": 640, "hbm_gb": 64, "hbm_bw_tbps": 1.6, "tdp_w": 392,
+        "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.70},
         "pcie": "PCIe 5.0", "interconnect": "HCCS + HCCL"
       }
     },
@@ -300,6 +304,7 @@
       ],
       "default_spec": {
         "bf16_tflops": 147, "int8_tops": 295, "hbm_gb": 32, "hbm_bw_tbps": 1.2, "tdp_w": 300,
+        "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.50},
         "pcie": "PCIe 4.0/5.0", "interconnect": "PCIe"
       }
     },
@@ -326,6 +331,7 @@
       ],
       "default_spec": {
         "bf16_tflops": 96, "int8_tops": 256, "hbm_gb": 48, "hbm_bw_tbps": 0.614, "tdp_w": 250,
+        "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.45},
         "pcie": "PCIe 4.0/5.0", "interconnect": "MLU-Link"
       }
     },
@@ -347,6 +353,7 @@
       ],
       "default_spec": {
         "bf16_tflops": 256, "int8_tops": 2048, "hbm_gb": 64, "hbm_bw_tbps": 1.64, "tdp_w": 550,
+        "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.55},
         "pcie": "OAM", "interconnect": "BLink"
       }
     },
@@ -368,6 +375,7 @@
       ],
       "default_spec": {
         "bf16_tflops": 245, "int8_tops": 490, "hbm_gb": 64, "hbm_bw_tbps": 1.55, "tdp_w": 350,
+        "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.55},
         "pcie": "PCIe 5.0", "interconnect": "MetaXLink"
       }
     },
@@ -388,6 +396,7 @@
       ],
       "default_spec": {
         "bf16_tflops": 100, "int8_tops": 200, "hbm_gb": 48, "hbm_bw_tbps": 0.768, "tdp_w": 350,
+        "nvidia_equivalent": {"card": "A100-80GB-SXM", "perf_ratio": 0.30},
         "pcie": "PCIe 5.0", "interconnect": "MTLink"
       }
     },
@@ -412,6 +421,7 @@
       ],
       "default_spec": {
         "bf16_tflops": 432, "int8_tops": 865, "hbm_gb": 96, "hbm_bw_tbps": 2.45, "tdp_w": 600,
+        "nvidia_equivalent": {"card": "H100-80GB-SXM", "perf_ratio": 0.70},
         "pcie": "OAM", "interconnect": "RoCE Mesh"
       }
     }
@@ -515,5 +525,73 @@
       ],
       "use_case": "超大模型服务、混合精度训练 + 推理一体化集群"
     }
-  ]
+  ],
+
+  "nvidia_reference_benchmarks": {
+    "_doc": "NVIDIA GPU 公开推理基准（基于 vLLM / SGLang / TensorRT-LLM 公开数据，input=256 / output=256 token），用于国产卡对标估算。",
+    "_methodology": [
+      "数据来源：vLLM benchmarks、Anyscale evaluations、NVIDIA 官方 whitepapers、SGLang/lmdeploy 公开测试",
+      "按模型激活参数量分档（与稀疏/MoE 解耦）：tiny(1-5B), small(6-15B), medium(16-35B), large(36-80B)",
+      "区间表示 [low, high]：low 为长上下文+小并发场景，high 为短上下文+大批量场景",
+      "国产卡 = NVIDIA 对标卡 × perf_ratio × 多卡扩展效率"
+    ],
+    "_active_param_tiers": {
+      "tiny":   {"range_b": [1, 5],   "example": "Qwen3.6-A3B 激活 3B"},
+      "small":  {"range_b": [6, 15],  "example": "DeepSeek-V4 激活 13B、Llama-7B"},
+      "medium": {"range_b": [16, 35], "example": "Qwen3.6-27B 稠密、Kimi-K2.6 激活 32B"},
+      "large":  {"range_b": [36, 80], "example": "GLM-5.1 激活 40B、Llama-70B"}
+    },
+    "_scaling_efficiency": {
+      "_doc": "多卡并行效率系数：单节点 TP 因 NVLink/XPU Link 损耗较小；跨节点 PP 受 RoCE/IB 延迟限制",
+      "single_card":    1.00,
+      "single_node_8":  0.78,
+      "multi_node_16":  0.55
+    },
+    "cards": {
+      "A100-80GB-SXM": {
+        "_doc": "对标基准卡：BF16 312 TFLOPS / HBM 80GB / 带宽 2.0 TB/s。key 与 scenario_templates.id 对应。",
+        "single_card": {
+          "tiny":   {"single_tps": [70, 110], "total_tps": [1800, 3000], "ttft_ms": [40,  100]},
+          "small":  {"single_tps": [45, 70],  "total_tps": [800, 1400],  "ttft_ms": [80,  180]},
+          "medium": {"single_tps": [22, 38],  "total_tps": [400, 800],   "ttft_ms": [180, 380]},
+          "large":  {"single_tps": [14, 24],  "total_tps": [200, 400],   "ttft_ms": [400, 800]}
+        },
+        "single_node_8": {
+          "tiny":   {"single_tps": [120, 200], "total_tps": [6000, 10000], "ttft_ms": [25, 70]},
+          "small":  {"single_tps": [80, 130],  "total_tps": [3500, 6000],  "ttft_ms": [50, 120]},
+          "medium": {"single_tps": [45, 70],   "total_tps": [2200, 4000],  "ttft_ms": [120, 250]},
+          "large":  {"single_tps": [28, 45],   "total_tps": [1400, 2600],  "ttft_ms": [230, 480]}
+        },
+        "multi_node_16": {
+          "small":  {"single_tps": [70, 110], "total_tps": [4500, 7500], "ttft_ms": [70, 160]},
+          "medium": {"single_tps": [35, 55],  "total_tps": [2500, 4200], "ttft_ms": [160, 320]},
+          "large":  {"single_tps": [22, 35],  "total_tps": [1500, 2600], "ttft_ms": [320, 650]}
+        }
+      },
+      "H100-80GB-SXM": {
+        "_doc": "BF16 989 TFLOPS / HBM 80GB / 带宽 3.35 TB/s，约 A100 2.5x",
+        "vs_a100_multiplier": 2.5
+      },
+      "H200-141GB-SXM": {
+        "_doc": "BF16 989 TFLOPS / HBM 141GB / 带宽 4.8 TB/s，约 A100 3.0x（大模型受带宽更敏感）",
+        "vs_a100_multiplier": 3.0
+      },
+      "B200": {
+        "_doc": "BF16 2250 TFLOPS / HBM 192GB / 带宽 8.0 TB/s，约 A100 5x",
+        "vs_a100_multiplier": 5.0
+      },
+      "H20": {
+        "_doc": "BF16 148 TFLOPS / HBM 96GB / 带宽 4.0 TB/s，算力低带宽高，约 A100 1.0x（带宽密集场景甚至更优）",
+        "vs_a100_multiplier": 1.0
+      },
+      "L40S": {
+        "_doc": "BF16 362 TFLOPS / HBM 48GB / 带宽 0.864 TB/s，约 A100 0.5x（小带宽限制）",
+        "vs_a100_multiplier": 0.5
+      },
+      "RTX-4090": {
+        "_doc": "BF16 330 TFLOPS / HBM 24GB / 带宽 1.0 TB/s，单卡推理约 A100 0.6x",
+        "vs_a100_multiplier": 0.6
+      }
+    }
+  }
 }

@@ -1209,21 +1209,18 @@ class ReportGenerator:
                         ok, precision, vram_used = True, "INT4/AWQ", f"~{int4} GB（权重）+ KV"
                 if not ok:
                     continue
-                # 性能区间（粗略估算）
-                tps_low, tps_high = self._estimate_tps(model, spec, actual_cards, precision)
-                tts_low, tts_high = self._estimate_ttft(model, spec, actual_cards)
-                conc_low, conc_high = self._estimate_concurrency(model, total_gb, fp16, int4, precision)
-                throughput_low = tps_low * conc_low // 2
-                throughput_high = tps_high * conc_high // 2
+                # 基于 NVIDIA 对标基准估算性能
+                weight_gb = int4 if precision.startswith("INT") else fp16
+                perf = self._estimate_perf(tpl.get("id", ""), model, precision, total_gb, weight_gb)
 
                 entry = {
                     "模型":      model["name"],
                     "精度":      precision,
                     "显存占用":  vram_used,
-                    "TTFT":      f"{tts_low}-{tts_high} ms",
-                    "单流 TPS":  f"{tps_low}-{tps_high} tok/s",
-                    "并发(估)":  f"{conc_low}-{conc_high}",
-                    "总吞吐":    f"{throughput_low}-{throughput_high} tok/s",
+                    "TTFT":      perf["TTFT"],
+                    "单流 TPS":  perf["单流 TPS"],
+                    "并发(估)":  perf["并发(估)"],
+                    "总吞吐":    perf["总吞吐"],
                     "说明":      model.get("notes", ""),
                     "_preferred": model["name"] == preferred_model_name,
                 }
@@ -1260,46 +1257,118 @@ class ReportGenerator:
 
         return scns
 
-    def _estimate_tps(self, model: Dict, spec: Dict, ncards: int, precision: str) -> Tuple[int, int]:
-        """粗略推断单流 TPS 区间。基于卡的 BF16 TFLOPS、激活参数量、并行度。"""
-        tflops_total = spec.get("bf16_tflops", 100) * ncards
+    def _active_param_tier(self, active_b: float) -> str:
+        """将激活参数量映射到 NVIDIA 基准的档位 (tiny/small/medium/large)。"""
+        tiers = self.profile.get("nvidia_reference_benchmarks", {}).get("_active_param_tiers", {})
+        for tier_name, tier in tiers.items():
+            lo, hi = tier.get("range_b", [0, 0])
+            if lo <= active_b <= hi:
+                return tier_name
+        # 超出 large 的（>80B 激活），归到 large（已是上限）
+        return "large" if active_b > 5 else "tiny"
+
+    def _lookup_nvidia_perf(self, scenario_id: str, active_b: float) -> Optional[Dict[str, List[int]]]:
+        """查询 primary_card 对标的 NVIDIA 卡在指定场景+档位的基准数据。
+        返回 None 表示无法对标（缺少 nvidia_equivalent 或基准未配置）。
+        """
+        if not self.primary_card:
+            return None
+        spec = self.primary_card.get("_spec", {})
+        ne = spec.get("nvidia_equivalent")
+        if not ne:
+            return None
+        bench_root = self.profile.get("nvidia_reference_benchmarks", {})
+        cards = bench_root.get("cards", {})
+        target_card = ne.get("card", "A100-80GB-SXM")
+        a100 = cards.get("A100-80GB-SXM", {})
+        # A100 是基准，其它卡通过 vs_a100_multiplier 推算
+        target = cards.get(target_card, {})
+        a100_scenario = a100.get(scenario_id, {})
+        tier = self._active_param_tier(active_b)
+        a100_tier = a100_scenario.get(tier)
+        # 若当前 tier 在该场景下无配置，沿就近档位回退
+        if not a100_tier:
+            fallback_order = ["tiny", "small", "medium", "large"]
+            try:
+                i = fallback_order.index(tier)
+            except ValueError:
+                i = 0
+            # 先向上（大→小）再向下（小→大）回退，避免越界用反向切片陷阱
+            candidates = list(reversed(fallback_order[:i])) + fallback_order[i+1:]
+            for alt in candidates:
+                if a100_scenario.get(alt):
+                    a100_tier = a100_scenario[alt]
+                    break
+        if not a100_tier:
+            return None
+        if target_card == "A100-80GB-SXM":
+            base = a100_tier
+        else:
+            mult = target.get("vs_a100_multiplier", 1.0)
+            base = {
+                "single_tps": [int(a100_tier["single_tps"][0] * mult),
+                               int(a100_tier["single_tps"][1] * mult)],
+                "total_tps":  [int(a100_tier["total_tps"][0]  * mult),
+                               int(a100_tier["total_tps"][1]  * mult)],
+                "ttft_ms":    [max(20, int(a100_tier["ttft_ms"][0] / mult)),
+                               max(30, int(a100_tier["ttft_ms"][1] / mult))],
+            }
+        return base
+
+    def _estimate_perf(self, scenario_id: str, model: Dict, precision: str,
+                       total_gb: float, weight_gb: float) -> Dict[str, str]:
+        """基于 NVIDIA 基准 × 对标系数 + INT4 加速 + 显存约束并发，估算各项指标。
+        返回字段：单流TPS / 总吞吐 / TTFT / 并发(估)。
+        """
+        active_str = model.get("active", "10B").replace("~", "").upper()
+        m = re.search(r"([\d.]+)", active_str)
+        active_b = float(m.group(1)) if m else 10.0
+
+        spec = self.primary_card.get("_spec", {}) if self.primary_card else {}
+        ne = spec.get("nvidia_equivalent", {})
+        perf_ratio = float(ne.get("perf_ratio", 0.5))
+
+        bench = self._lookup_nvidia_perf(scenario_id, active_b)
+        # 没有 NVIDIA 基准时给保守默认值（避免给出误导性的高估）
+        if bench is None:
+            tps_lo, tps_hi = 8, 18
+            tot_lo, tot_hi = 80, 200
+            tft_lo, tft_hi = 300, 800
+        else:
+            tps_lo = max(1, int(bench["single_tps"][0] * perf_ratio))
+            tps_hi = max(tps_lo + 2, int(bench["single_tps"][1] * perf_ratio))
+            tot_lo = max(10, int(bench["total_tps"][0] * perf_ratio))
+            tot_hi = max(tot_lo + 10, int(bench["total_tps"][1] * perf_ratio))
+            # TTFT 与算力反相关：性能系数越低，TTFT 越高
+            inv = 1.0 / max(perf_ratio, 0.1)
+            tft_lo = max(20, int(bench["ttft_ms"][0] * inv))
+            tft_hi = max(tft_lo + 30, int(bench["ttft_ms"][1] * inv))
+
+        # INT4 量化在 generation 阶段提速约 30-40%，但 prefill/TTFT 加速有限
         if precision.startswith("INT"):
-            tflops_total *= 1.6
-        active_str = model.get("active", "10B").replace("~", "").upper()
-        m = re.search(r"([\d.]+)", active_str)
-        active_b = float(m.group(1)) if m else 10
-        # 启发式: TPS ≈ tflops / (2 * active_params * batch_factor)
-        base = tflops_total / max(active_b, 1) / 2
-        # MoE 模型给加成
-        if "MoE" in model.get("params", ""):
-            base *= 1.4
-        low = max(int(base * 0.4), 20)
-        high = max(int(base * 0.8), low + 10)
-        return low, high
+            tps_lo = int(tps_lo * 1.30)
+            tps_hi = int(tps_hi * 1.35)
+            tot_lo = int(tot_lo * 1.20)
+            tot_hi = int(tot_hi * 1.25)
+            tft_lo = int(tft_lo * 0.90)
+            tft_hi = int(tft_hi * 0.95)
 
-    def _estimate_ttft(self, model: Dict, spec: Dict, ncards: int) -> Tuple[int, int]:
-        """首 token 延迟启发式估算，单位 ms。"""
-        active_str = model.get("active", "10B").replace("~", "").upper()
-        m = re.search(r"([\d.]+)", active_str)
-        active_b = float(m.group(1)) if m else 10
-        tflops_total = spec.get("bf16_tflops", 100) * ncards
-        # 假设 prefill 512 token: 计算量 = 2 * params * seqlen
-        prefill_tflops = 2 * active_b * 512 / 1000
-        ttft_ms = (prefill_tflops / max(tflops_total, 1)) * 1000 * 50
-        low = max(50, int(ttft_ms * 0.7))
-        high = max(low + 50, int(ttft_ms * 1.5))
-        return low, high
+        # 并发数受 KV Cache 显存约束（每并发约 1 GB KV，长上下文+大模型）
+        kv_per_conc_gb = 1.0 if active_b > 20 else 0.6
+        kv_budget = max(0.5, total_gb - weight_gb)
+        max_conc_by_mem = int(kv_budget / kv_per_conc_gb)
+        # 同时受 总吞吐/单流TPS 约束
+        max_conc_by_tps = max(2, int(tot_hi / max(tps_lo, 1)))
+        # 取两者较小值作为合理上限
+        conc_high = max(2, min(max_conc_by_mem, max_conc_by_tps))
+        conc_low = max(1, conc_high // 4)
 
-    def _estimate_concurrency(self, model: Dict, total_gb: float,
-                              fp16_gb: float, int4_gb: float,
-                              precision: str) -> Tuple[int, int]:
-        weight_gb = int4_gb if precision.startswith("INT") else fp16_gb
-        kv_budget = max(0.1, total_gb - weight_gb)
-        # 每个并发约 0.5GB KV（保守）
-        max_conc = int(kv_budget / 0.5)
-        low = max(4, max_conc // 3)
-        high = max(low + 4, max_conc)
-        return low, high
+        return {
+            "单流 TPS":  f"{tps_lo}-{tps_hi} tok/s",
+            "总吞吐":    f"{tot_lo}-{tot_hi} tok/s",
+            "TTFT":      f"{tft_lo}-{tft_hi} ms",
+            "并发(估)":  f"{conc_low}-{conc_high}",
+        }
 
     def _parse_rdma_ibstatus(self, ibstatus_text: str) -> List[Dict]:
         """解析ibstatus输出，提取RDMA链路状态信息。
@@ -1866,7 +1935,15 @@ class ReportGenerator:
 
         a("## 📊 六、性能预估")
         a("")
-        a("> 以下数据基于卡的标称算力 + 模型激活参数量估算，实际值受量化方式、上下文长度、并发模式影响")
+        a("> 估算方法：基于 NVIDIA A100/H100 在 vLLM/SGLang 公开基准（input/output=256/256 token）的实测数据，"
+          "按当前卡型的对标系数（`nvidia_equivalent.perf_ratio`）折算；多卡场景另叠加并行扩展效率。")
+        # 标注对标卡和系数（提升透明度）
+        if self.primary_card:
+            ne = self.primary_card.get("_spec", {}).get("nvidia_equivalent")
+            if ne:
+                a("")
+                a(f"> **对标基准**：`{ne['card']}` × **{ne['perf_ratio']:.0%}** "
+                  f"{('—— ' + ne.get('note', '')) if ne.get('note') else ''}")
         a("")
         if not scns:
             a("*未匹配到适用场景（可能是显存不足或卡型未识别）*")
@@ -1917,7 +1994,27 @@ class ReportGenerator:
 
         a("---")
         a("")
-        a("> **免责声明**：以上性能评估数据基于理论计算和经验估算，实际推理性能受量化方式、上下文长度、并发模式、框架优化等因素影响，仅供参考。请在实际部署前进行充分的基准测试。")
+        a('<div class="disclaimer" markdown="1">')
+        a("")
+        a("## 免责声明（Disclaimer）")
+        a("")
+        a("> **本报告中『六、性能预估』章节所列数据，均为基于硬件标称参数与 NVIDIA 公开推理基准的理论推算值，"
+          "并非在目标系统上的真实测试结果。**")
+        a("")
+        a("实际推理性能受以下因素综合影响，可能与本报告估算存在显著差异：")
+        a("")
+        a("1. **量化精度与实现**：FP16 / BF16 / INT8 / INT4（AWQ / GPTQ / SmoothQuant）的具体算法与 kernel 优化")
+        a("2. **上下文与请求模式**：输入 / 输出 token 长度、Prefill 与 Decode 占比、请求到达分布")
+        a("3. **并发与批处理策略**：Continuous Batching、PagedAttention、Speculative Decoding 等优化的启用情况")
+        a("4. **推理框架版本**：vLLM / SGLang / TensorRT-LLM / LMDeploy / PaddleNLP 等的版本差异")
+        a("5. **系统软件栈**：驱动、CUDA / ROCm / XCCL / CANN 等运行时版本与编译优化级别")
+        a("6. **集群网络拓扑**：多机场景下 RDMA / NCCL / XCCL 通信效率、GPUDirect 启用状态")
+        a("7. **模型结构特性**：Dense / MoE / MLA / 长上下文优化等架构差异")
+        a("")
+        a("> **本报告数据仅供硬件选型阶段的可行性评估参考，不构成对生产环境 SLA 的承诺或保证。** "
+          "在正式投入生产前，请务必在目标软硬件环境中，以真实业务负载完成完整的基准测试与压力测试，并以实测结果为最终依据。")
+        a("")
+        a("</div>")
         a("")
         a("---")
         a(f"*报告生成: {self.ts} | Server Inspector {self.tool_version} | 配置文件驱动 | 主机: `{self.hostname}`*")
@@ -1965,6 +2062,19 @@ blockquote{border-left:4px solid #3b82f6;margin:14px 0;padding:12px 20px;
            background:linear-gradient(90deg,#eff6ff,#f8fafc);border-radius:0 8px 8px 0;
            color:#475569;font-style:normal}
 blockquote strong{color:#1e40af}
+.disclaimer{border:2px solid #f59e0b;background:linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%);
+            border-radius:12px;padding:22px 28px;margin:28px 0;
+            box-shadow:0 4px 14px rgba(245,158,11,.18)}
+.disclaimer h2{border-left:none;background:none;color:#b45309;margin:0 0 14px 0;
+               padding:0;font-size:1.25em;display:flex;align-items:center;gap:8px}
+.disclaimer h2::before{content:"⚠️";font-size:1.1em}
+.disclaimer h2 *:first-child{display:inline}
+.disclaimer blockquote{border-left:3px solid #f59e0b;background:rgba(255,255,255,.5);
+                       color:#78350f;margin:10px 0;padding:10px 16px;border-radius:0 6px 6px 0}
+.disclaimer blockquote strong{color:#9a3412}
+.disclaimer ol,.disclaimer ul{color:#78350f;margin:8px 0}
+.disclaimer li{margin:4px 0}
+.disclaimer p{color:#78350f;margin:6px 0}
 ul{padding-left:24px}
 ol{padding-left:24px}
 li{margin:5px 0}
@@ -2097,6 +2207,10 @@ a:hover{text-decoration:underline}
                 out.append("<hr>")
             elif line.strip() == "":
                 flush_lists()
+            elif re.match(r"^\s*</?(div|section|aside|details|summary)[\s>]", line):
+                # 原样透传容器级 HTML 标签（用于免责声明等特殊样式块）
+                flush_lists()
+                out.append(line)
             else:
                 flush_lists()
                 out.append(f"<p>{md_inline(line)}</p>")

@@ -387,12 +387,12 @@ class HardwareCollector:
                 info["RDMA链路"] = rdma_out
 
         if self.reg.has("ibv_devinfo"):
-            _, ibv_out, _ = run("ibv_devinfo 2>/dev/null | grep -E 'hca_id|active_mtu|state|rate' | head -40")
+            _, ibv_out, _ = run("ibv_devinfo 2>/dev/null | grep -E 'hca_id|active_mtu|state|rate'")
             if ibv_out:
                 info["RDMA设备详情(ibv_devinfo)"] = ibv_out
 
         if self.reg.has("show_gids"):
-            _, gids_out, _ = run("show_gids 2>/dev/null | head -10")
+            _, gids_out, _ = run("show_gids 2>/dev/null")
             if gids_out:
                 info["RoCE GID表"] = gids_out
 
@@ -1302,76 +1302,134 @@ class ReportGenerator:
         return low, high
 
     def _parse_rdma_ibstatus(self, ibstatus_text: str) -> List[Dict]:
-        """解析ibstatus输出，提取RDMA链路状态信息。"""
+        """解析ibstatus输出，提取RDMA链路状态信息。
+        ibstatus块格式:
+            Infiniband device 'mlx5_20' port 1 status:
+                state:    4: ACTIVE
+                rate:     400 Gb/sec (4X NDR)
+                link_layer: Ethernet
+        """
         if not ibstatus_text or ibstatus_text == "未检测":
             return []
         results = []
-        lines = ibstatus_text.split("\n")
-        for line in lines:
-            line = line.strip()
-            if not line or "---" in line or "Infiniband" in line:
+        current: Dict[str, str] = {}
+        # 按"Infiniband device"为块分隔
+        for line in ibstatus_text.split("\n"):
+            line = line.rstrip()
+            stripped = line.strip()
+            if not stripped:
                 continue
-            # 尝试解析 "mlx5_0: HCA is UP" 或 "mlx5_0/1:     DOWN 200Gb/sec"
-            if "HCA is UP" in line:
-                parts = line.split(":")
-                if parts:
-                    device = parts[0].strip()
-                    results.append({"设备": device, "状态": "UP"})
-            elif "DOWN" in line or "ACTIVE" in line or "FAILED" in line:
-                parts = line.split()
-                if len(parts) >= 2:
-                    device = parts[0].strip().rstrip(":")
-                    status = "ACTIVE" if "ACTIVE" in line else ("DOWN" if "DOWN" in line else "FAILED")
-                    rate = "未知"
-                    for p in parts:
-                        if "Gb/sec" in p or "Mb/sec" in p:
-                            rate = p
-                    results.append({"设备": device, "状态": status, "速率": rate})
-        return results if results else [{"设备": "未检测", "状态": "—", "速率": "—"}]
+            # 新设备块开始
+            m = re.search(r"Infiniband device\s+'([^']+)'", stripped)
+            if m:
+                if current.get("设备"):
+                    results.append(current)
+                current = {"设备": m.group(1), "状态": "—", "速率": "—", "链路层": "—"}
+                continue
+            if not current:
+                continue
+            # 字段提取
+            if stripped.startswith("state:"):
+                # "state:    4: ACTIVE" → ACTIVE
+                tail = stripped.split(":", 1)[1].strip()
+                # 取最后一个token（如 ACTIVE/DOWN）
+                tokens = tail.replace(":", " ").split()
+                if tokens:
+                    current["状态"] = tokens[-1]
+            elif stripped.startswith("rate:"):
+                # "rate:    400 Gb/sec (4X NDR)" → 400 Gb/sec (4X NDR)
+                current["速率"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("link_layer:"):
+                current["链路层"] = stripped.split(":", 1)[1].strip()
+        if current.get("设备"):
+            results.append(current)
+        return results if results else [{"设备": "未检测", "状态": "—", "速率": "—", "链路层": "—"}]
 
     def _parse_rdma_devinfo(self, devinfo_text: str) -> List[Dict]:
-        """解析ibv_devinfo输出，提取RDMA设备信息。"""
+        """解析ibv_devinfo输出，提取RDMA设备信息。
+        ibv_devinfo块格式:
+            hca_id:    mlx5_20
+                    state:        PORT_ACTIVE (4)
+                    active_mtu:   4096 (5)
+        """
         if not devinfo_text or devinfo_text == "未检测":
             return []
         results = []
-        current_device = {}
+        current: Dict[str, str] = {}
         for line in devinfo_text.split("\n"):
-            line = line.strip()
-            if not line:
-                if current_device and "HCA名称" in current_device:
-                    results.append(current_device)
-                    current_device = {}
+            stripped = line.strip()
+            if not stripped:
                 continue
-            if "hca_id:" in line.lower():
-                if current_device and "HCA名称" in current_device:
-                    results.append(current_device)
-                current_device = {"HCA名称": line.split(":")[-1].strip()}
-            elif "active_mtu:" in line.lower():
-                current_device["MTU"] = line.split(":")[-1].strip()
-            elif "state:" in line.lower() and "ACTIVE" in line:
-                current_device["状态"] = "ACTIVE"
-            elif "rate:" in line.lower() or "active_speed" in line.lower():
-                current_device["速率"] = line.split(":")[-1].strip()
-        if current_device and "HCA名称" in current_device:
-            results.append(current_device)
-        return results if results else [{"HCA名称": "未检测", "状态": "—"}]
+            if stripped.startswith("hca_id:"):
+                if current.get("HCA名称"):
+                    results.append(current)
+                current = {
+                    "HCA名称": stripped.split(":", 1)[1].strip(),
+                    "MTU": "—",
+                    "状态": "—",
+                }
+                continue
+            if not current:
+                continue
+            if stripped.startswith("active_mtu:"):
+                current["MTU"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("state:"):
+                tail = stripped.split(":", 1)[1].strip()
+                # 取 "PORT_ACTIVE (4)" 中的状态部分
+                if "PORT_ACTIVE" in tail:
+                    current["状态"] = "ACTIVE"
+                elif "PORT_DOWN" in tail:
+                    current["状态"] = "DOWN"
+                else:
+                    current["状态"] = tail.split()[0] if tail else "—"
+        if current.get("HCA名称"):
+            results.append(current)
+        return results if results else [{"HCA名称": "未检测", "MTU": "—", "状态": "—"}]
 
     def _parse_rdma_gids(self, gids_text: str) -> List[Dict]:
-        """解析RoCE GID表。"""
+        """解析RoCE GID表。
+        show_gids表格列序: DEV PORT INDEX GID [IPv4] VER DEV
+        只显示带IPv4地址的行（真正用于RoCE通信的GID）。
+        """
         if not gids_text or gids_text == "未检测":
             return []
         results = []
-        lines = gids_text.split("\n")
-        for line in lines:
-            line = line.strip()
-            if not line or "GID" in line or "---" in line:
+        for line in gids_text.split("\n"):
+            stripped = line.strip()
+            if not stripped:
                 continue
-            parts = line.split()
-            if len(parts) >= 2:
-                gid_idx = parts[0].strip(":")
-                gid_addr = " ".join(parts[1:3]) if len(parts) >= 3 else parts[1]
-                gid_type = "IPv4" if "." in gid_addr else ("IPv6" if ":" in gid_addr else "IB")
-                results.append({"GID索引": gid_idx, "地址": gid_addr, "类型": gid_type})
+            # 跳过表头和分隔线
+            if stripped.startswith("DEV") or stripped.startswith("---") or stripped.startswith("n_gids"):
+                continue
+            parts = stripped.split()
+            if len(parts) < 5:
+                continue
+            dev = parts[0]
+            port = parts[1]
+            index = parts[2]
+            gid = parts[3]
+            # 检查是否有IPv4字段：判断剩余的token里是否有点分十进制
+            ipv4 = "—"
+            ver = "—"
+            netdev = "—"
+            for p in parts[4:]:
+                if re.match(r"^\d+\.\d+\.\d+\.\d+$", p):
+                    ipv4 = p
+                elif p in ("v1", "v2"):
+                    ver = p
+                elif p.startswith(("eth", "bond", "ens", "enp")):
+                    netdev = p
+            # 只保留有IPv4地址的行（RoCEv2 GID）
+            if ipv4 == "—":
+                continue
+            results.append({
+                "设备": dev,
+                "端口": port,
+                "索引": index,
+                "IPv4": ipv4,
+                "版本": ver,
+                "网卡": netdev,
+            })
         return results if results else []
 
     # ── Markdown 渲染 ──
@@ -1556,10 +1614,10 @@ class ReportGenerator:
             a("")
             rdma_status = self._parse_rdma_ibstatus(net["RDMA链路状态(ibstatus)"])
             if rdma_status:
-                a("| 设备 | 状态 | 速率 |")
-                a("|:----|:----|:----|")
+                a("| 设备 | 状态 | 速率 | 链路层 |")
+                a("|:----|:----|:----|:----|")
                 for item in rdma_status:
-                    a(f"| {item.get('设备','—')} | {item.get('状态','—')} | {item.get('速率','—')} |")
+                    a(f"| {item.get('设备','—')} | {item.get('状态','—')} | {item.get('速率','—')} | {item.get('链路层','—')} |")
                 a("")
 
         # RDMA设备详情
@@ -1568,22 +1626,25 @@ class ReportGenerator:
             a("")
             rdma_devinfo = self._parse_rdma_devinfo(net["RDMA设备详情(ibv_devinfo)"])
             if rdma_devinfo:
-                a("| HCA 名称 | MTU | 状态 | 速率 |")
-                a("|:----|:----|:----|:----|")
+                a("| HCA 名称 | 状态 | MTU |")
+                a("|:----|:----|:----|")
                 for item in rdma_devinfo:
-                    a(f"| {item.get('HCA名称','—')} | {item.get('MTU','—')} | {item.get('状态','—')} | {item.get('速率','—')} |")
+                    a(f"| {item.get('HCA名称','—')} | {item.get('状态','—')} | {item.get('MTU','—')} |")
                 a("")
 
-        # RoCE GID表
+        # RoCE GID表（只显示带IPv4的RoCEv2 GID）
         if net.get("RoCE GID表"):
-            a("**RoCE GID 表：**")
+            a("**RoCE GID 表（仅展示带 IPv4 的 RoCE v2 条目）：**")
             a("")
             rdma_gids = self._parse_rdma_gids(net["RoCE GID表"])
             if rdma_gids:
-                a("| GID 索引 | 地址 | 类型 |")
-                a("|:----|:----|:----|")
+                a("| 设备 | 端口 | 索引 | IPv4 | 版本 | 网卡 |")
+                a("|:----|:----|:----|:----|:----|:----|")
                 for item in rdma_gids:
-                    a(f"| {item.get('GID索引','—')} | {item.get('地址','—')} | {item.get('类型','—')} |")
+                    a(f"| {item.get('设备','—')} | {item.get('端口','—')} | {item.get('索引','—')} | {item.get('IPv4','—')} | {item.get('版本','—')} | {item.get('网卡','—')} |")
+                a("")
+            else:
+                a("*未检测到带 IPv4 地址的 RoCE GID 条目*")
                 a("")
         if net.get("FC Host设备"):
             a("**FC HBA：**")

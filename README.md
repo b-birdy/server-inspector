@@ -1,183 +1,182 @@
 # Server Inspector
 
-A universal hardware capacity assessment tool for evaluating server capabilities for LLM inference deployment. Automatically detects and profiles hardware including CPUs, memory, accelerators, storage, network, and software ecosystem.
+一个通用的硬件容量评估工具，用于评估服务器在大语言模型推理部署中的性能表现。自动检测并分析CPU、内存、加速器、存储、网络和软件生态等硬件信息。
 
-## Features
+## 功能特性
 
-- **Multi-Accelerator Support**: Detects 11+ GPU/accelerator types (NVIDIA, AMD, Hygon, Kunlun, Ascend, Iluvatar, Cambricon, Biren, MetaX, MoorThreads, Habana)
-- **Multi-Architecture CPU Recognition**: Supports Intel x86, AMD, ARM-based (Kunpeng, Phytium), RISC-V, LoongArch, Sunway, and Power architectures
-- **30+ GPU Model Specifications**: Pre-configured models with performance (TFLOPS), memory (HBM), bandwidth, and power consumption metrics
-- **Intelligent Command Discovery**: Auto-detects hardware diagnostic tools (nvidia-smi, rocm-smi, xpu-smi, etc.) in system PATH and common installation directories
-- **Performance Scenario Modeling**: Estimates inference performance across single-card, single-node (8-card), and multi-node (16-card) deployment scenarios
-- **Dynamic Profile Configuration**: Hardware knowledge stored in external `profiles.json` - easily extend for new accelerators and GPUs without code modification
-- **Multiple Output Formats**: Generates Markdown reports (human-readable), HTML (visual), and JSON (machine-parseable) for integration with monitoring systems
-- **Container & Kubernetes Detection**: Identifies Docker, containerd, Kubernetes, GPU container toolkits (NVIDIA, AMD, Intel), and scheduling frameworks
-- **RDMA & Cluster Toolkit Detection**: Scans for multi-node communication libraries and frameworks
-- **ML Framework Detection**: Identifies PyTorch, TensorFlow, JAX, and other inference-related libraries in system
+- **多加速器支持**：支持11种以上GPU/加速器（NVIDIA、AMD、海光、昆仑、昇腾、浪潮、寒武纪、壁仞、沐曦、摩尔线程、Habana）
+- **多架构CPU识别**：支持Intel x86、AMD、ARM（鲲鹏、飞腾）、RISC-V、龙芯、申威和Power等处理器架构
+- **30+GPU型号规格库**：预配置的GPU型号数据，包含性能参数（TFLOPS）、显存（HBM）、带宽和功耗等指标
+- **智能命令发现**：自动检测系统PATH和常见安装目录中的硬件诊断工具（nvidia-smi、rocm-smi、xpu-smi等）
+- **性能场景建模**：评估单卡、单节点8卡、多节点16卡等不同部署场景下的推理性能
+- **动态配置驱动**：硬件知识存储在外部`profiles.json`配置文件中，无需修改代码即可扩展新硬件
+- **多种输出格式**：生成Markdown报告（易读）、HTML报告（可视化）和JSON数据（机器解析）
+- **容器与Kubernetes检测**：识别Docker、containerd、Kubernetes以及GPU容器工具包
+- **RDMA与集群工具包检测**：扫描多节点通信库和框架
+- **ML框架检测**：识别系统中的PyTorch、TensorFlow、JAX等推理框架
 
-## Supported Hardware
+## 支持的硬件
 
-### GPUs & Accelerators
-- **NVIDIA**: Full CUDA device support via nvidia-smi
-- **AMD**: RDNA/CDNA cards via rocm-smi
-- **Hygon**: DCU accelerators (dcmi tool)
-- **Kunlun**: XTCPU/XTCPU-C models via xpu-smi
-- **Ascend**: Huawei NPU via npu-smi
-- **Iluvatar**: Dedicated GPUs via iluvatar-smi
-- **Cambricon**: MLU accelerators via cnmon
-- **Biren**: SR series via biren-smi
-- **MetaX**: MPS cores via metax-smi
-- **MoorThreads**: MTT series via mtm-smi
-- **Habana**: Gaudi accelerators via hl-smi
+### GPU与加速器
+- **NVIDIA**：支持所有CUDA设备（通过nvidia-smi）
+- **AMD**：RDNA/CDNA芯片（通过rocm-smi）
+- **海光**：DCU加速器（dcmi工具）
+- **昆仑**：XTCPU/XTCPU-C系列（通过xpu-smi）
+- **昇腾**：华为NPU（通过npu-smi）
+- **浪潮**：专用GPU（通过iluvatar-smi）
+- **寒武纪**：MLU加速器（通过cnmon）
+- **壁仞**：SR系列（通过biren-smi）
+- **沐曦**：MPS核心（通过metax-smi）
+- **摩尔线程**：MTT系列（通过mtm-smi）
+- **Habana**：Gaudi加速器（通过hl-smi）
 
-### CPUs
-- Intel (Xeon, Core)
-- AMD (EPYC, Ryzen)
-- Arm-based (Kunpeng, Phytium, Ampere)
-- RISC-V based processors
-- LoongArch processors
-- Sunway processors
-- IBM Power processors
+### CPU处理器
+- Intel（Xeon、Core系列）
+- AMD（EPYC、Ryzen系列）
+- Arm架构（鲲鹏、飞腾、安培）
+- RISC-V架构处理器
+- 龙芯处理器
+- 申威处理器
+- IBM Power处理器
 
-## Installation
+## 安装
 
-### Prerequisites
-- Linux-only (kernel detection ensures safe operation)
-- Python 3.6 or later
+### 系统要求
+- Linux操作系统（内核检测确保安全运行）
+- Python 3.6及以上版本
 - pip
 
-### Setup
+### 安装步骤
 
 ```bash
-# Clone the repository
+# 克隆仓库
 git clone https://github.com/b-birdy/server-inspector.git
 cd server-inspector
 
-# No external Python dependencies required
-# (Uses only Python standard library: subprocess, json, re, platform, etc.)
+# 无需外部Python依赖
+# （仅使用Python标准库：subprocess、json、re、platform等）
 
-# Run the tool
+# 运行工具
 python3 inspector.py --output-dir ./reports --profile profiles.json
 ```
 
-## Quick Start
+## 快速开始
 
 ```bash
-# Basic usage - generates reports in current directory
+# 基本使用 - 在当前目录生成报告
 python3 inspector.py
 
-# Specify output directory
+# 指定输出目录
 python3 inspector.py --output-dir /path/to/reports
 
-# Use custom hardware profile
+# 使用自定义硬件配置文件
 python3 inspector.py --profile custom_profiles.json --output-dir ./reports
 
-# View help
+# 查看帮助信息
 python3 inspector.py --help
 ```
 
-## Usage Guide
+## 使用指南
 
-### Command-Line Options
+### 命令行选项
 
 ```
---output-dir DIR       Directory to save reports (default: current directory)
---profile FILE         Path to profiles.json configuration file (default: profiles.json in script directory)
---help                 Show help message and exit
+--output-dir DIR       报告保存目录（默认：当前目录）
+--profile FILE         profiles.json配置文件路径（默认：脚本同目录下的profiles.json）
+--help                 显示帮助信息并退出
 ```
 
-### Output Files
+### 输出文件
 
-Each run generates three files with a unique timestamp:
+每次运行生成三个带有唯一时间戳的文件：
 
-1. **Markdown Report** (`report_<id>_<timestamp>.md`)
-   - Human-readable format suitable for documentation
-   - Includes tables, sections, and easy interpretation
-   - Best for: sharing with team, documentation, quick review
+1. **Markdown报告** (`report_<id>_<timestamp>.md`)
+   - 易读的纯文本格式，包含表格、分段组织
+   - 适合：文档整理、团队分享、快速查看
 
-2. **HTML Report** (`report_<id>_<timestamp>.html`)
-   - Visual format with styling and organization
-   - Fully self-contained (no external dependencies)
-   - Best for: sharing via email, web viewing, presentations
+2. **HTML报告** (`report_<id>_<timestamp>.html`)
+   - 可视化格式，具有样式和良好的排版
+   - 完全独立的文件（无外部依赖）
+   - 适合：邮件分享、网页查看、演示展示
 
-3. **JSON Report** (`report_<id>_<timestamp>.json`)
-   - Machine-parseable structured data
-   - Best for: integration with monitoring systems, automation, metrics collection
+3. **JSON报告** (`report_<id>_<timestamp>.json`)
+   - 机器可解析的结构化数据
+   - 适合：监控系统集成、自动化处理、指标收集
 
-### Report Contents
+### 报告内容
 
-Each report includes:
+每份报告包含：
 
-- **System Overview**: Hostname, OS, kernel version, unique server ID
-- **CPU Information**: Architecture, vendor, model, core count, frequencies, cache
-- **Memory**: Total RAM, memory layout, node information
-- **Storage**: Disk devices, capacity, types (SSD vs HDD)
-- **Network**: Interface count, types, speed capabilities
-- **Accelerators**: Detected GPUs/accelerators with:
-  - Device count and type
-  - Memory specifications (VRAM size and bandwidth)
-  - Performance metrics (TFLOPS, INT8 TOPS)
-  - Power consumption
-  - PCIe generation and connectivity
-  - Recommended inference frameworks
-- **Drivers**: Version information for detected accelerator drivers
-- **Software Stack**: Detected container runtimes, Kubernetes, communication libraries, ML frameworks
-- **Performance Scenarios**: Predicted inference throughput (tokens/second) for:
-  - 3 representative LLM models (fp16 and int4 quantized)
-  - Single-card deployment
-  - Single-node 8-card deployment
-  - Multi-node 16-card deployment (distributed inference)
-  - Estimated token latency ranges
+- **系统概览**：主机名、操作系统、内核版本、唯一服务器ID
+- **CPU信息**：架构、厂商、型号、核心数、频率、缓存
+- **内存**：总容量、内存布局、NUMA节点信息
+- **存储**：磁盘设备、容量、类型（SSD或HDD）
+- **网络**：网卡数量、类型、速率能力
+- **加速器**：检测到的GPU/加速器，包含：
+  - 设备数量和类型
+  - 显存规格（容量和带宽）
+  - 性能指标（TFLOPS、INT8 TOPS）
+  - 功耗信息
+  - PCIe版本和连接方式
+  - 推荐的推理框架
+- **驱动程序**：检测到的加速器驱动版本
+- **软件栈**：检测到的容器运行时、Kubernetes、通信库、ML框架
+- **性能场景**：预估的推理吞吐量（tokens/秒），包括：
+  - 3个代表性大语言模型（fp16和int4量化）
+  - 单卡部署
+  - 单节点8卡部署
+  - 多节点16卡部署（分布式推理）
+  - 估计的token延迟范围
 
-## Interpreting Reports
+## 报告解读
 
-### Hardware Specifications
+### 硬件规格指标
 
-**CPU Vendor Detection**: Uses CPUID vendor ID (x86) and CPU model name pattern matching for proper vendor classification.
+**CPU厂商识别**：通过CPUID厂商ID（x86）和CPU型号名称模式匹配来准确识别厂商。
 
-**Accelerator Memory**: VRAM size and bandwidth are critical for:
-- Batch size limits (HBM capacity / model memory requirement)
-- Inference throughput (limited by HBM bandwidth for memory-bound operations)
+**加速器显存**：显存容量和带宽对以下指标至关重要：
+- 批处理大小限制（显存容量 / 模型显存需求）
+- 推理吞吐量（通常受限于显存带宽，对于内存密集型LLM推理尤为如此）
 
-**Performance Metrics**:
-- **TFLOPS (BF16)**: Peak floating-point throughput for 16-bit operations
-- **TOPS (INT8)**: Integer throughput for quantized model inference
-- **HBM Bandwidth**: Memory bandwidth (TB/s) - often bottleneck for LLM inference
+**性能指标**：
+- **TFLOPS (BF16)**：16位浮点运算的峰值吞吐量
+- **TOPS (INT8)**：量化模型推理的整数运算吞吐量
+- **显存带宽**：显存带宽（TB/s）- 通常是LLM推理的瓶颈
 
-### Performance Scenario Interpretation
+### 性能场景解读
 
-**Single-Card Scenario**: Best-case for latency-sensitive applications (interactive chatbots)
-- 1 card × model throughput
-- Best token-to-first-token (TTFT) latency
-- Lower concurrency
+**单卡场景**：适合对延迟敏感的应用（交互式聊天机器人）
+- 1张卡 × 模型吞吐量
+- 最低的首token延迟（TTFT）
+- 较低的并发数
 
-**Single-Node 8-Card**: Balance of throughput and latency
-- 8 cards with tensor parallelism (TP=8)
-- Moderate scaling efficiency
-- Suitable for batch inference and fine-tuning
+**单节点8卡**：吞吐量和延迟的平衡方案
+- 8张卡配合张量并行（TP=8）
+- 中等的扩展效率
+- 适合批量推理和微调
 
-**Multi-Node 16-Card**: Maximum throughput
-- Distributed training across 2 nodes × 8 cards
-- Requires RDMA/high-speed network
-- Best for high-throughput batch inference
-- May have higher latency due to inter-node communication
+**多节点16卡**：最大吞吐量
+- 分布式部署：2个节点 × 8张卡
+- 需要RDMA/高速网络支持
+- 适合高吞吐量批量推理
+- 可能因节点间通信而有更高的延迟
 
-**Performance Ranges**:
-- Each model shows low/mid/high estimates
-- Low: conservative estimate (60% of theoretical peak)
-- Mid: realistic estimate (70% of theoretical peak)  
-- High: optimized estimate (80% of theoretical peak)
+**性能范围**：
+- 每个模型显示低、中、高三个估计值
+- 低：保守估计（理论峰值的60%）
+- 中：现实估计（理论峰值的70%）
+- 高：优化估计（理论峰值的80%）
 
-## Configuration & Extension
+## 配置与扩展
 
-### Adding New GPU Models
+### 添加新的GPU型号
 
-Edit `profiles.json` and locate the `accelerators` section for your GPU vendor. For each accelerator object, find the `model_specs` array and add a new entry:
+编辑 `profiles.json`，找到 `accelerators` 部分中对应的GPU厂商。在每个加速器对象的 `model_specs` 数组中添加新条目：
 
 ```json
 {
-  "name": "GPU-Model-Name",
-  "match_keywords": ["matching", "strings", "from", "product", "name"],
+  "name": "GPU型号名称",
+  "match_keywords": ["匹配", "产品名称", "中的", "关键词"],
   "bf16_tflops": 312,
   "int8_tops": 312,
   "hbm_gb": 80,
@@ -188,142 +187,142 @@ Edit `profiles.json` and locate the `accelerators` section for your GPU vendor. 
 }
 ```
 
-The tool will match new GPU names against `match_keywords` and use these specifications.
+工具将自动匹配新GPU名称与 `match_keywords` 中的关键词，并使用这些规格参数。
 
-### Adding New Accelerator Types
+### 添加新的加速器类型
 
-To add support for a new accelerator (e.g., new vendor):
+要支持新的加速器（如新厂商）：
 
-1. Add entry to `accelerators` array with:
-   - `id`: unique identifier
-   - `detect_smi`: primary detection command
-   - `detect_smi_alt`: alternative detection method
-   - `queries`: command patterns for extracting information
-   - `model_specs`: array of supported models
-   - `frameworks`: recommended inference frameworks
+1. 在 `accelerators` 数组中添加条目，包含：
+   - `id`：唯一标识符
+   - `detect_smi`：主检测命令
+   - `detect_smi_alt`：备用检测方法
+   - `queries`：提取信息的命令模式
+   - `model_specs`：支持的型号数组
+   - `frameworks`：推荐的推理框架
 
-2. Update `bin_search_paths` if the new accelerator has tools in non-standard directories
+2. 如果新加速器的工具在非标准目录，更新 `bin_search_paths`
 
-3. Add category to `bin_categories` if new command types are needed
+3. 如果需要新的命令类型，更新 `bin_categories`
 
-The modular design means inspector.py code remains unchanged when extending hardware support.
+模块化设计确保在扩展硬件支持时，inspector.py代码无需修改。
 
-### Understanding profiles.json Structure
+### 理解profiles.json结构
 
 ```json
 {
   "schema_version": "1.0",
   "tool_version": "1.2.0",
-  "bin_search_paths": [...],           // Directories to scan for diagnostic tools
-  "bin_categories": {...},              // Tool categories and command names
-  "cpu_vendor_x86": {...},              // x86 CPUID vendor ID mappings
-  "cpu_model_keywords": [...],          // Pattern matching for non-x86 CPUs
-  "accelerators": [...],                // GPU/accelerator definitions
-  "models_2026": [...],                 // LLM model specifications
-  "scenario_templates": [...]           // Deployment scenario definitions
+  "bin_search_paths": [...],           // 扫描诊断工具的目录列表
+  "bin_categories": {...},              // 工具类别和命令名称映射
+  "cpu_vendor_x86": {...},              // x86 CPUID厂商ID映射
+  "cpu_model_keywords": [...],          // 非x86 CPU的型号名称模式匹配
+  "accelerators": [...],                // GPU/加速器定义
+  "models_2026": [...],                 // 大语言模型规格
+  "scenario_templates": [...]           // 部署场景模板定义
 }
 ```
 
-## Requirements & Limitations
+## 系统要求与限制
 
-### System Requirements
+### 系统要求
 
-- **Linux** (tested on Ubuntu 20.04+, CentOS 8+, Debian 11+)
-- **Python 3.6+** (uses only standard library)
-- **Root/sudo access** not required (most commands run as regular user)
-  - Some diagnostic commands may output limited info without elevated privileges
+- **Linux操作系统**（已在Ubuntu 20.04+、CentOS 8+、Debian 11+上测试）
+- **Python 3.6及以上**（仅使用标准库）
+- **无需root/sudo权限**（大多数命令以普通用户运行）
+  - 某些诊断命令可能需要提升权限以获取完整信息
 
-### Limitations
+### 限制条件
 
-1. **Linux-only**: Uses Linux-specific /proc, /sys, and command-line tools
-2. **Command Availability**: Accuracy depends on hardware diagnostic tools being installed:
-   - Without `nvidia-smi`: NVIDIA detection falls back to lspci (limited info)
-   - Without `rocm-smi`: AMD detection falls back to lspci
-   - Similar fallbacks for other vendors
+1. **仅限Linux**：使用Linux特定的/proc、/sys和命令行工具
+2. **命令可用性**：准确性取决于硬件诊断工具的安装情况：
+   - 无nvidia-smi：NVIDIA检测回退到lspci（信息有限）
+   - 无rocm-smi：AMD检测回退到lspci
+   - 其他厂商类似
 
-3. **Environment-Specific**: Some information requires specific drivers/tools:
-   - RDMA library detection requires installed OFED/OpenFabrics
-   - Container detection requires Docker/containerd to be installed
-   - Kubernetes detection requires kubectl
+3. **环境特定性**：某些信息需要特定的驱动/工具：
+   - RDMA库检测需要安装OFED/OpenFabrics
+   - 容器检测需要安装Docker/containerd
+   - Kubernetes检测需要kubectl
 
-4. **Performance Estimation**: Scenario performance numbers are estimates based on:
-   - Peak TFLOPS / bandwidth
-   - Theoretical model memory requirements
-   - Typical inference overhead (not profiled on this system)
-   - Actual performance varies by model, framework, and optimization
+4. **性能估计**：场景性能数据是基于以下因素的估计值：
+   - 峰值TFLOPS/带宽
+   - 理论模型显存需求
+   - 典型推理开销（未在当前系统上进行分析）
+   - 实际性能因模型、框架和优化而异
 
-## Examples
+## 使用示例
 
-### Typical Report Output Structure (Markdown)
+### 典型报告输出结构（Markdown格式）
 
 ```markdown
-# Server Assessment Report
+# 服务器评估报告
 
-## System Overview
-- Hostname: server-a
-- Server ID: 6c5a91e2
-- OS: Linux (Ubuntu 22.04)
-- Kernel: 5.15.0-56-generic
+## 系统概览
+- 主机名：server-a
+- 服务器ID：6c5a91e2
+- 操作系统：Linux (Ubuntu 22.04)
+- 内核版本：5.15.0-56-generic
 
 ## CPU
-- Vendor: Intel
-- Model: Xeon(R) Platinum 8380
-- Cores: 112 (56P + 56E)
-- Base/Turbo: 2.30 / 3.40 GHz
+- 厂商：Intel
+- 型号：Xeon(R) Platinum 8380
+- 核心数：112 (56P + 56E)
+- 基础/睿频：2.30 / 3.40 GHz
 
-## Memory
-- Total: 1024 GiB
-- Nodes: 8 (NUMA)
+## 内存
+- 总容量：1024 GiB
+- NUMA节点：8个
 
-## Accelerators
-| Type | Count | Model | VRAM | Bandwidth | TFLOPS |
-|------|-------|-------|------|-----------|--------|
+## 加速器
+| 类型 | 数量 | 型号 | 显存 | 带宽 | TFLOPS |
+|------|------|------|------|------|--------|
 | NVIDIA | 8 | H100 | 80GB | 3.35 TB/s | 1979 |
 
-## Performance Scenarios
-### Single Card Inference
-- Model: Qwen 3.6B (fp16)
-- Throughput: 150-200 tokens/sec
-- TTFT: 20-30ms
-- Max Concurrency: 4-8
+## 性能场景
+### 单卡推理
+- 模型：Qwen 3.6B (fp16)
+- 吞吐量：150-200 tokens/秒
+- 首token延迟：20-30ms
+- 最大并发：4-8
 
 ...
 ```
 
-## Contributing
+## 贡献
 
-Contributions welcome! Areas for enhancement:
+欢迎贡献代码！增强方向包括：
 
-1. **New Hardware Support**: Add profiles for emerging accelerators
-2. **New Models**: Extend `models_2026` array with additional LLM specifications
-3. **Better Performance Estimation**: Improved algorithms for scenario modeling
-4. **Framework Support**: Add detection for additional ML frameworks
-5. **Documentation**: Examples, troubleshooting guides, use cases
+1. **新硬件支持**：为新兴加速器添加配置
+2. **新模型支持**：扩展 `models_2026` 数组，添加更多大语言模型规格
+3. **更好的性能估计**：改进场景建模算法
+4. **框架支持**：添加更多ML框架的检测
+5. **文档完善**：示例、故障排除指南、使用案例等
 
-## License
+## 许可证
 
-This project is provided as-is for hardware assessment and capacity planning purposes.
+本项目作为硬件评估和容量规划工具提供。
 
-## Troubleshooting
+## 故障排查
 
-### No Output or Empty Reports
+### 无输出或报告为空
 
-1. Check Python version: `python3 --version` (requires 3.6+)
-2. Ensure `profiles.json` exists in same directory as `inspector.py`
-3. Verify output directory is writable: `ls -ld ./reports`
+1. 检查Python版本：`python3 --version`（需要3.6+）
+2. 确保 `profiles.json` 在 `inspector.py` 同目录
+3. 验证输出目录可写：`ls -ld ./reports`
 
-### Missing Accelerator Information
+### 加速器信息缺失
 
-- Install corresponding diagnostic tools (nvidia-smi, rocm-smi, xpu-smi, etc.)
-- Check `/proc/devices` and `lspci` manually to verify hardware presence
-- Verify driver installation if tools are available
+- 安装对应的诊断工具（nvidia-smi、rocm-smi、xpu-smi等）
+- 手动检查 `/proc/devices` 和 `lspci` 验证硬件
+- 验证驱动安装（如工具可用）
 
-### Incorrect Hardware Detection
+### 硬件检测不准确
 
-- Some commands may require specific locales to parse correctly
-- Tool automatically sets LANG=C for consistent output
-- Check individual command output: `nvidia-smi -q` or `rocm-smi --showproductname`
+- 某些命令可能需要特定的语言设置来正确解析
+- 工具自动设置LANG=C以保证一致的输出
+- 手动运行命令检查：`nvidia-smi -q` 或 `rocm-smi --showproductname`
 
-## Support & Feedback
+## 支持与反馈
 
-For issues, questions, or contributions, please open an issue on GitHub.
+如有问题、疑问或想提交贡献，请在GitHub上开issue。

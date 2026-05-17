@@ -913,8 +913,19 @@ class SoftwareCollector:
             if kn and "NAME" in kn:
                 info["K8s 节点状态"] = kn
 
-        in_ctr = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        info["当前环境"] = "容器内" if in_ctr else "裸机"
+        # 环境检测：宿主机 / Docker / K8S
+        env_type = "宿主机"
+        if os.path.exists("/.dockerenv"):
+            env_type = "docker容器"
+        elif os.path.exists("/run/.containerenv"):
+            # 可能是Podman、Podman-compose、Kubernetes等
+            if os.path.exists("/var/run/secrets/kubernetes.io") or os.environ.get("KUBERNETES_SERVICE_HOST"):
+                env_type = "K8S容器"
+            else:
+                env_type = "docker容器"
+        elif os.path.exists("/var/run/secrets/kubernetes.io") or os.environ.get("KUBERNETES_SERVICE_HOST"):
+            env_type = "K8S容器"
+        info["当前脚本运行环境"] = env_type
         return info
 
     def collect_ml_env(self) -> Dict:
@@ -976,6 +987,7 @@ class ReportGenerator:
         self.profile = profile
         self.hostname = hostname.split(".")[0]
         self.ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.tool_version = profile.get("tool_version", "v1.2.0")
         accel = hw.get("算力卡", {})
         self.accel_type     = accel.get("_主要算力类型", "未检测到")
         self.accel_count    = accel.get("_总卡数", 0)
@@ -1056,8 +1068,18 @@ class ReportGenerator:
                 warnings.append("Gaudi 首选框架 habana_frameworks 未安装")
         return {"问题": issues, "警告": warnings, "正常": goods}
 
+    def _has_rdma_capability(self) -> bool:
+        """检查RDMA链路是否可用（ACTIVE状态）。"""
+        rdma_link = self.hw.get("网络", {}).get("RDMA链路状态(ibstatus)", "")
+        if not rdma_link:
+            return False
+        active_cnt = rdma_link.count("ACTIVE")
+        return active_cnt >= 2  # 至少2路ACTIVE
+
     def recommend(self) -> Dict:
         cnt = self.accel_count
+        has_rdma = self._has_rdma_capability()
+
         if cnt == 0:
             mode, tp = "CPU 推理（性能有限）", 1
             frameworks = ["llama.cpp (CPU)", "Transformers + bitsandbytes"]
@@ -1066,7 +1088,11 @@ class ReportGenerator:
         elif cnt <= 8:
             mode, tp = f"单机多卡（TP={cnt}）", cnt
         else:
-            mode, tp = f"多机多卡（总 TP≥{cnt}）", cnt
+            # 只有在有RDMA能力时才建议多机方案
+            if has_rdma:
+                mode, tp = f"多机多卡（总 TP≥{cnt}）", cnt
+            else:
+                mode, tp = f"单机多卡（TP={min(cnt, 8)}）", min(cnt, 8)
 
         if self.primary_card:
             frameworks = self.primary_card.get("_frameworks", ["llama.cpp (CPU)"])
@@ -1159,7 +1185,10 @@ class ReportGenerator:
 
             # 筛选适用模型
             match_rule = tpl.get("match_models_by_fp16", {})
+            preferred_model_name = tpl.get("preferred_model", "")
             applicable: List[Dict] = []
+            preferred_found = False
+
             for model in models:
                 fp16 = model["fp16_gb"]
                 int4 = model["int4_gb"]
@@ -1187,7 +1216,7 @@ class ReportGenerator:
                 throughput_low = tps_low * conc_low // 2
                 throughput_high = tps_high * conc_high // 2
 
-                applicable.append({
+                entry = {
                     "模型":      model["name"],
                     "精度":      precision,
                     "显存占用":  vram_used,
@@ -1196,10 +1225,23 @@ class ReportGenerator:
                     "并发(估)":  f"{conc_low}-{conc_high}",
                     "总吞吐":    f"{throughput_low}-{throughput_high} tok/s",
                     "说明":      model.get("notes", ""),
-                })
+                    "_preferred": model["name"] == preferred_model_name,
+                }
+                applicable.append(entry)
+                if entry["_preferred"]:
+                    preferred_found = True
 
             if not applicable:
                 continue
+
+            # 优先排列preferred_model
+            if preferred_found:
+                applicable.sort(key=lambda x: not x["_preferred"])
+
+            # 移除_preferred字段后返回
+            for item in applicable:
+                del item["_preferred"]
+
             applicable = applicable[:3]
 
             entry = {
@@ -1259,6 +1301,79 @@ class ReportGenerator:
         high = max(low + 4, max_conc)
         return low, high
 
+    def _parse_rdma_ibstatus(self, ibstatus_text: str) -> List[Dict]:
+        """解析ibstatus输出，提取RDMA链路状态信息。"""
+        if not ibstatus_text or ibstatus_text == "未检测":
+            return []
+        results = []
+        lines = ibstatus_text.split("\n")
+        for line in lines:
+            line = line.strip()
+            if not line or "---" in line or "Infiniband" in line:
+                continue
+            # 尝试解析 "mlx5_0: HCA is UP" 或 "mlx5_0/1:     DOWN 200Gb/sec"
+            if "HCA is UP" in line:
+                parts = line.split(":")
+                if parts:
+                    device = parts[0].strip()
+                    results.append({"设备": device, "状态": "UP"})
+            elif "DOWN" in line or "ACTIVE" in line or "FAILED" in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    device = parts[0].strip().rstrip(":")
+                    status = "ACTIVE" if "ACTIVE" in line else ("DOWN" if "DOWN" in line else "FAILED")
+                    rate = "未知"
+                    for p in parts:
+                        if "Gb/sec" in p or "Mb/sec" in p:
+                            rate = p
+                    results.append({"设备": device, "状态": status, "速率": rate})
+        return results if results else [{"设备": "未检测", "状态": "—", "速率": "—"}]
+
+    def _parse_rdma_devinfo(self, devinfo_text: str) -> List[Dict]:
+        """解析ibv_devinfo输出，提取RDMA设备信息。"""
+        if not devinfo_text or devinfo_text == "未检测":
+            return []
+        results = []
+        current_device = {}
+        for line in devinfo_text.split("\n"):
+            line = line.strip()
+            if not line:
+                if current_device and "HCA名称" in current_device:
+                    results.append(current_device)
+                    current_device = {}
+                continue
+            if "hca_id:" in line.lower():
+                if current_device and "HCA名称" in current_device:
+                    results.append(current_device)
+                current_device = {"HCA名称": line.split(":")[-1].strip()}
+            elif "active_mtu:" in line.lower():
+                current_device["MTU"] = line.split(":")[-1].strip()
+            elif "state:" in line.lower() and "ACTIVE" in line:
+                current_device["状态"] = "ACTIVE"
+            elif "rate:" in line.lower() or "active_speed" in line.lower():
+                current_device["速率"] = line.split(":")[-1].strip()
+        if current_device and "HCA名称" in current_device:
+            results.append(current_device)
+        return results if results else [{"HCA名称": "未检测", "状态": "—"}]
+
+    def _parse_rdma_gids(self, gids_text: str) -> List[Dict]:
+        """解析RoCE GID表。"""
+        if not gids_text or gids_text == "未检测":
+            return []
+        results = []
+        lines = gids_text.split("\n")
+        for line in lines:
+            line = line.strip()
+            if not line or "GID" in line or "---" in line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                gid_idx = parts[0].strip(":")
+                gid_addr = " ".join(parts[1:3]) if len(parts) >= 3 else parts[1]
+                gid_type = "IPv4" if "." in gid_addr else ("IPv6" if ":" in gid_addr else "IB")
+                results.append({"GID索引": gid_idx, "地址": gid_addr, "类型": gid_type})
+        return results if results else []
+
     # ── Markdown 渲染 ──
     def to_markdown(self) -> str:
         ana = self.analyze()
@@ -1284,7 +1399,7 @@ class ReportGenerator:
         a("")
         a(f"> **主机:** `{self.hostname}`  ")
         a(f"> **评估时间:** `{self.ts}`  ")
-        a(f"> **工具版本:** Server Inspector **v1.2.0**（配置驱动）")
+        a(f"> **工具版本:** Server Inspector **{self.tool_version}**（配置驱动）")
         a("")
         a("---")
         a("")
@@ -1435,12 +1550,40 @@ class ReportGenerator:
             a(net["PCIe网络设备"])
             a("```")
             a("")
-        for k in ["RDMA链路状态(ibstatus)", "RDMA链路", "RDMA设备详情(ibv_devinfo)", "RoCE GID表"]:
-            if net.get(k):
-                a(f"**{k}：**")
-                a("```")
-                a(str(net[k])[:700])
-                a("```")
+        # RDMA链路状态
+        if net.get("RDMA链路状态(ibstatus)"):
+            a("**RDMA 链路状态 (ibstatus)：**")
+            a("")
+            rdma_status = self._parse_rdma_ibstatus(net["RDMA链路状态(ibstatus)"])
+            if rdma_status:
+                a("| 设备 | 状态 | 速率 |")
+                a("|:----|:----|:----|")
+                for item in rdma_status:
+                    a(f"| {item.get('设备','—')} | {item.get('状态','—')} | {item.get('速率','—')} |")
+                a("")
+
+        # RDMA设备详情
+        if net.get("RDMA设备详情(ibv_devinfo)"):
+            a("**RDMA 设备详情 (ibv_devinfo)：**")
+            a("")
+            rdma_devinfo = self._parse_rdma_devinfo(net["RDMA设备详情(ibv_devinfo)"])
+            if rdma_devinfo:
+                a("| HCA 名称 | MTU | 状态 | 速率 |")
+                a("|:----|:----|:----|:----|")
+                for item in rdma_devinfo:
+                    a(f"| {item.get('HCA名称','—')} | {item.get('MTU','—')} | {item.get('状态','—')} | {item.get('速率','—')} |")
+                a("")
+
+        # RoCE GID表
+        if net.get("RoCE GID表"):
+            a("**RoCE GID 表：**")
+            a("")
+            rdma_gids = self._parse_rdma_gids(net["RoCE GID表"])
+            if rdma_gids:
+                a("| GID 索引 | 地址 | 类型 |")
+                a("|:----|:----|:----|")
+                for item in rdma_gids:
+                    a(f"| {item.get('GID索引','—')} | {item.get('地址','—')} | {item.get('类型','—')} |")
                 a("")
         if net.get("FC Host设备"):
             a("**FC HBA：**")
@@ -1468,7 +1611,7 @@ class ReportGenerator:
             if card.get("PCIe设备列表") and card["PCIe设备列表"] != "未检测":
                 a("**PCIe 设备列表：**")
                 a("```")
-                a(card["PCIe设备列表"][:600])
+                a(card["PCIe设备列表"])
                 a("```")
                 a("")
 
@@ -1597,7 +1740,7 @@ class ReportGenerator:
                 a(ctr["K8s 节点状态"])
                 a("```")
                 a("")
-            a(f"**当前运行环境：** {ctr.get('当前环境','—')}")
+            a(f"**当前脚本运行环境：** {ctr.get('当前脚本运行环境','—')}")
             a("")
 
         a("### 3.5 ML 推理框架")
@@ -1712,7 +1855,11 @@ class ReportGenerator:
         a("")
 
         a("---")
-        a(f"*报告生成: {self.ts} | Server Inspector v1.2.0 | 配置文件驱动 | 主机: `{self.hostname}`*")
+        a("")
+        a("> **免责声明**：以上性能评估数据基于理论计算和经验估算，实际推理性能受量化方式、上下文长度、并发模式、框架优化等因素影响，仅供参考。请在实际部署前进行充分的基准测试。")
+        a("")
+        a("---")
+        a(f"*报告生成: {self.ts} | Server Inspector {self.tool_version} | 配置文件驱动 | 主机: `{self.hostname}`*")
         return "\n".join(L)
 
     # ── HTML 渲染 ──
@@ -1946,12 +2093,13 @@ def main():
                         help="硬件配置文件路径 (默认: profiles.json，脚本同目录)")
     args = parser.parse_args()
 
+    profile = load_profile(args.profile)
+    tool_version = profile.get("tool_version", "v1.2.0")
+
     print("\033[1m" + "=" * 64)
-    print("  服务器推理能力评估工具 v1.2.0")
+    print(f"  服务器推理能力评估工具 {tool_version}")
     print("  Server Inference Capability Inspector (profile-driven)")
     print("=" * 64 + "\033[0m\n")
-
-    profile = load_profile(args.profile)
     progress(f"加载配置: {len(profile.get('accelerators', []))} 种加速卡, "
              f"{len(profile.get('models_2026', []))} 个模型, "
              f"{len(profile.get('scenario_templates', []))} 个场景模板")
@@ -2031,7 +2179,7 @@ def main():
     json_path.write_text(
         json.dumps({"hardware": to_json(hw), "software": to_json(sw),
                     "timestamp": ts_str,
-                    "tool_version": "1.2.0",
+                    "tool_version": profile.get("tool_version", "v1.2.0"),
                     "profile_version": profile.get("tool_version", "?")},
                    ensure_ascii=False, indent=2),
         encoding="utf-8"

@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "tool_version": "1.2.0",
+  "tool_version": "v0.1",
   "_doc": "Server Inspector 外部配置：包含各类硬件的检测命令、解析正则、规格库。修改本文件可直接扩展脚本支持范围，无需改 Python 代码。",
 
   "platforms_supported": ["linux"],
@@ -484,6 +484,7 @@
       "min_cards": 1,
       "tp_recipe": "TP=1",
       "match_models_by_fp16": {"max_gb_per_card_ratio": 0.85},
+      "preferred_model": "Qwen3.6-27B",
       "use_case": "中小规模在线服务、长尾应用、内部工具",
       "notes": "适用于单卡显存 ≥ 模型权重 + KV Cache 的场景"
     },
@@ -494,6 +495,7 @@
       "max_cards": 8,
       "tp_recipe": "TP=8",
       "match_models_by_fp16": {"max_gb_total_ratio": 0.80},
+      "preferred_model": "DeepSeek-V4-Flash",
       "use_case": "中大型生产服务、SaaS 服务、企业级 RAG",
       "notes": "节点内全互联，无跨机延迟，吞吐峰值"
     },
@@ -504,6 +506,7 @@
       "min_cards": 8,
       "tp_recipe": "TP=8 × PP=2",
       "match_models_by_fp16": {"max_gb_total_ratio": 0.85},
+      "preferred_model": "GLM-5.1",
       "prerequisites": [
         "节点间 RDMA 已 ACTIVE",
         "MPI/NCCL/XCCL 多节点配置完成",

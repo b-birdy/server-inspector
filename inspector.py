@@ -22,6 +22,8 @@ import os
 import re
 import sys
 import json
+import zlib
+import base64
 import html as html_lib
 import datetime
 import socket
@@ -33,7 +35,8 @@ from typing import Dict, List, Tuple, Any, Optional
 # ─────────────────────────────────────────────
 # 平台 guard
 # ─────────────────────────────────────────────
-if sys.platform not in ("linux", "linux2"):
+# --encode-profile 是纯文件工具，不依赖 Linux 接口，跳过平台检查
+if sys.platform not in ("linux", "linux2") and "--encode-profile" not in sys.argv:
     print(f"⚠️  本工具仅支持 Linux（当前平台: {sys.platform}）", file=sys.stderr)
     print("    Windows / macOS 上无法采集 Linux 专属硬件信息，请在目标 Linux 服务器上运行。", file=sys.stderr)
     sys.exit(1)
@@ -66,22 +69,53 @@ def progress(msg: str):
 # 配置文件加载
 # ─────────────────────────────────────────────
 
-def load_profile(path: str) -> Dict:
-    """加载 profiles.json。脚本同目录优先，失败则报错。"""
+# 用于配置文件弱编码的内部密钥（仅用于阻止"打开就能读"，非加密保护）
+_PROFILE_KEY = b"svi-internal-2026-pkg-v1"
+
+
+def _profile_xor(data: bytes) -> bytes:
+    return bytes(b ^ _PROFILE_KEY[i % len(_PROFILE_KEY)] for i, b in enumerate(data))
+
+
+def encode_profile_bytes(plain: bytes) -> bytes:
+    """明文 JSON 字节 → 编码后字节（zlib 压缩 + XOR + Base64）。"""
+    return base64.b64encode(_profile_xor(zlib.compress(plain, level=9)))
+
+
+def decode_profile_bytes(enc: bytes) -> bytes:
+    """编码后字节 → 明文 JSON 字节。"""
+    return zlib.decompress(_profile_xor(base64.b64decode(enc)))
+
+
+def _resolve_profile_path(path: str) -> Optional[Path]:
+    """按优先级查找 profile 文件：先 .enc，再 .json，最后原样路径。"""
     p = Path(path)
-    if not p.is_absolute():
-        for candidate in [Path.cwd() / path, Path(__file__).parent / path]:
-            if candidate.exists():
-                p = candidate
-                break
-    if not p.exists():
+    bases = [p.parent] if p.is_absolute() else [Path.cwd(), Path(__file__).parent]
+    stems = [p.stem] if p.is_absolute() else [Path(path).stem]
+    candidates: List[Path] = []
+    for base in bases:
+        for stem in stems:
+            candidates.append(base / f"{stem}.enc")
+            candidates.append(base / f"{stem}.json")
+            candidates.append(base / Path(path).name)
+    if p.is_absolute():
+        candidates.insert(0, p)
+    return next((c for c in candidates if c.exists()), None)
+
+
+def load_profile(path: str) -> Dict:
+    """加载 profile。优先加密 .enc，回退到明文 .json。"""
+    chosen = _resolve_profile_path(path)
+    if not chosen:
         print(f"❌ 找不到配置文件: {path}", file=sys.stderr)
         sys.exit(2)
     try:
-        with p.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError as e:
-        print(f"❌ profiles.json 解析失败: {e}", file=sys.stderr)
+        raw = chosen.read_bytes()
+        if chosen.suffix == ".enc":
+            raw = decode_profile_bytes(raw)
+        return json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, zlib.error, ValueError, base64.binascii.Error) as e:
+        print(f"❌ 配置文件解析失败 ({chosen}): {e}", file=sys.stderr)
         sys.exit(2)
 
 
@@ -1994,29 +2028,12 @@ class ReportGenerator:
 
         a("---")
         a("")
-        a('<div class="disclaimer" markdown="1">')
-        a("")
-        a("## 免责声明（Disclaimer）")
-        a("")
-        a("> **本报告中『六、性能预估』章节所列数据，均为基于硬件标称参数与 NVIDIA 公开推理基准的理论推算值，"
-          "并非在目标系统上的真实测试结果。**")
-        a("")
-        a("实际推理性能受以下因素综合影响，可能与本报告估算存在显著差异：")
-        a("")
-        a("1. **量化精度与实现**：FP16 / BF16 / INT8 / INT4（AWQ / GPTQ / SmoothQuant）的具体算法与 kernel 优化")
-        a("2. **上下文与请求模式**：输入 / 输出 token 长度、Prefill 与 Decode 占比、请求到达分布")
-        a("3. **并发与批处理策略**：Continuous Batching、PagedAttention、Speculative Decoding 等优化的启用情况")
-        a("4. **推理框架版本**：vLLM / SGLang / TensorRT-LLM / LMDeploy / PaddleNLP 等的版本差异")
-        a("5. **系统软件栈**：驱动、CUDA / ROCm / XCCL / CANN 等运行时版本与编译优化级别")
-        a("6. **集群网络拓扑**：多机场景下 RDMA / NCCL / XCCL 通信效率、GPUDirect 启用状态")
-        a("7. **模型结构特性**：Dense / MoE / MLA / 长上下文优化等架构差异")
-        a("")
-        a("> **本报告数据仅供硬件选型阶段的可行性评估参考，不构成对生产环境 SLA 的承诺或保证。** "
-          "在正式投入生产前，请务必在目标软硬件环境中，以真实业务负载完成完整的基准测试与压力测试，并以实测结果为最终依据。")
-        a("")
+        a('<div class="notice" markdown="1">')
+        a('**特别提醒** 性能预估为基于硬件对外公开参数的估算值，'
+          '实际表现受模型、推理框架、参数配置、量化精度、网络拓扑等因素影响，仅供硬件选型参考，'
+          '正式部署请以目标环境实测为准。')
         a("</div>")
         a("")
-        a("---")
         a(f"*报告生成: {self.ts} | Server Inspector {self.tool_version} | 配置文件驱动 | 主机: `{self.hostname}`*")
         return "\n".join(L)
 
@@ -2062,19 +2079,13 @@ blockquote{border-left:4px solid #3b82f6;margin:14px 0;padding:12px 20px;
            background:linear-gradient(90deg,#eff6ff,#f8fafc);border-radius:0 8px 8px 0;
            color:#475569;font-style:normal}
 blockquote strong{color:#1e40af}
-.disclaimer{border:2px solid #f59e0b;background:linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%);
-            border-radius:12px;padding:22px 28px;margin:28px 0;
-            box-shadow:0 4px 14px rgba(245,158,11,.18)}
-.disclaimer h2{border-left:none;background:none;color:#b45309;margin:0 0 14px 0;
-               padding:0;font-size:1.25em;display:flex;align-items:center;gap:8px}
-.disclaimer h2::before{content:"⚠️";font-size:1.1em}
-.disclaimer h2 *:first-child{display:inline}
-.disclaimer blockquote{border-left:3px solid #f59e0b;background:rgba(255,255,255,.5);
-                       color:#78350f;margin:10px 0;padding:10px 16px;border-radius:0 6px 6px 0}
-.disclaimer blockquote strong{color:#9a3412}
-.disclaimer ol,.disclaimer ul{color:#78350f;margin:8px 0}
-.disclaimer li{margin:4px 0}
-.disclaimer p{color:#78350f;margin:6px 0}
+.notice{border:1px solid #f59e0b;background:linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%);
+        border-radius:8px;padding:10px 14px;margin:18px 0;font-size:.78em;
+        color:#78350f;line-height:1.5}
+.notice p{margin:0}
+.notice p strong:first-child{display:inline-block;background:#f59e0b;color:#fff;
+            padding:1px 8px;border-radius:4px;margin-right:8px;font-size:.95em;
+            letter-spacing:.5px}
 ul{padding-left:24px}
 ol{padding-left:24px}
 li{margin:5px 0}
@@ -2261,12 +2272,37 @@ a:hover{text-decoration:underline}
 # ─────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="服务器推理能力评估工具 v1.2.0")
+    parser = argparse.ArgumentParser(description="服务器推理能力评估工具")
     parser.add_argument("--output-dir", default="./reports",
                         help="报告输出目录 (默认: ./reports)")
     parser.add_argument("--profile", default="profiles.json",
-                        help="硬件配置文件路径 (默认: profiles.json，脚本同目录)")
+                        help="配置文件路径，自动匹配 .enc / .json (默认: profiles)")
+    parser.add_argument("--encode-profile", metavar="INPUT.json",
+                        help="将明文 JSON 配置编码为 .enc 文件后退出（维护者使用）")
     args = parser.parse_args()
+
+    # 维护者工具：从明文 JSON 生成加密 .enc 文件，不进入采集流程
+    if args.encode_profile:
+        in_path = Path(args.encode_profile)
+        if not in_path.exists():
+            print(f"❌ 输入文件不存在: {in_path}", file=sys.stderr)
+            sys.exit(2)
+        plain = in_path.read_bytes()
+        # 校验是合法 JSON
+        try:
+            json.loads(plain.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            print(f"❌ 输入文件不是合法 JSON: {e}", file=sys.stderr)
+            sys.exit(2)
+        out_path = in_path.with_suffix(".enc")
+        out_path.write_bytes(encode_profile_bytes(plain))
+        # 使用 sys.stdout.buffer 直接写 utf-8，避免 Windows GBK 控制台报错
+        msg = f"[OK] 已生成加密配置: {out_path} ({out_path.stat().st_size} bytes)\n"
+        try:
+            sys.stdout.buffer.write(msg.encode("utf-8"))
+        except AttributeError:
+            print(msg.strip())
+        sys.exit(0)
 
     profile = load_profile(args.profile)
     tool_version = profile.get("tool_version", "v1.2.0")

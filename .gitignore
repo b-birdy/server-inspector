@@ -42,3 +42,6 @@ local_output/
 .env.local
 *.key
 *.pem
+
+# Profile 明文配置（仓库内只提交加密的 profiles.enc）
+profiles.json

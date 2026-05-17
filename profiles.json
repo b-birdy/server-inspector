@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "tool_version": "v0.1",
+  "tool_version": "v0.2",
   "_doc": "Server Inspector 外部配置：包含各类硬件的检测命令、解析正则、规格库。修改本文件可直接扩展脚本支持范围，无需改 Python 代码。",
 
   "platforms_supported": ["linux"],

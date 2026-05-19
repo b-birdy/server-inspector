@@ -261,14 +261,14 @@ if [[ "$no_modify_path" != true ]]; then
 
     if [[ -z $config_file ]]; then
         print_message warning "No shell config found. Add to PATH manually:"
-        print_message info '  export PATH="$BIN_DIR:$PATH"'
+        print_message info "  export PATH=\"$BIN_DIR:\$PATH\""
     elif [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
         case $current_shell in
             fish)
-                add_to_path "$config_file" "fish_add_path '$BIN_DIR'"
+                add_to_path "$config_file" "fish_add_path $BIN_DIR"
                 ;;
             *)
-                add_to_path "$config_file" 'export PATH="$BIN_DIR:$PATH"'
+                add_to_path "$config_file" "export PATH=\"$BIN_DIR:\$PATH\""
                 ;;
         esac
     else

@@ -2368,7 +2368,7 @@ def main():
 
     ts_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     h_short = hostname.split(".")[0]
-    out_dir = Path(args.output_dir)
+    out_dir = Path(args.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     md_path   = out_dir / f"report_{h_short}_{ts_str}.md"

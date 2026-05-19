@@ -333,10 +333,24 @@ echo "  server-inspector --help             ${MUTED}# Show help${NC}"
 echo "  server-inspector --output-dir ./reports ${MUTED}# Specify output dir${NC}"
 echo ""
 
-# If PATH was modified, remind to source or restart
+# If PATH was modified, ask to source now
 if [[ "$no_modify_path" != true && -n "${config_file:-}" ]] && [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    echo -e "${ORANGE}Run this to use server-inspector in current session:${NC}"
+    echo ""
+    echo -e "${ORANGE}需要执行以下命令将 server-inspector 添加到当前会话的 PATH：${NC}"
     echo -e "  source $config_file"
+    echo -ne "${ORANGE}是否现在执行？[Y/n]: ${NC}"
+    if [[ -t 0 ]]; then
+        read -r response
+    else
+        read -r response </dev/tty 2>/dev/null || response="Y"
+    fi
+    response=${response:-Y}
+    if [[ "$response" =~ ^[Yy] ]]; then
+        source "$config_file" 2>/dev/null || true
+        echo -e "${GREEN}✅ PATH 已生效，当前会话即可使用 server-inspector${NC}"
+    else
+        echo -e "${MUTED}⏭ 跳过。稍后可手动执行: source $config_file${NC}"
+    fi
     echo ""
 fi
 

@@ -1,8 +1,18 @@
-# Server Inspector
+# 🔍 Server Inspector
+
+**自动评估服务器的大模型推理能力。**
+
+一行命令，生成硬件 + 推理性能评估报告（Markdown / HTML / JSON）。
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python: 3.6+](https://img.shields.io/badge/Python-3.6+-blue.svg)](https://www.python.org/)
+[![Platform: Linux](https://img.shields.io/badge/Platform-Linux-green.svg)](https://github.com/b-birdy/server-inspector)
+
+---
 
 一个通用的硬件容量评估工具，用于评估服务器在大语言模型推理部署中的性能表现。自动检测并分析CPU、内存、加速器、存储、网络和软件生态等硬件信息。
 
-## 功能特性
+## ✨ 功能特性
 
 - **多加速器支持**：支持11种以上GPU/加速器（NVIDIA、AMD、海光、昆仑、昇腾、浪潮、寒武纪、壁仞、沐曦、摩尔线程、Habana）
 - **多架构CPU识别**：支持Intel x86、AMD、ARM（鲲鹏、飞腾）、RISC-V、龙芯、申威和Power等处理器架构
@@ -15,7 +25,7 @@
 - **RDMA与集群工具包检测**：扫描多节点通信库和框架
 - **ML框架检测**：识别系统中的PyTorch、TensorFlow、JAX等推理框架
 
-## 支持的硬件
+## 🖥️ 支持的硬件
 
 ### GPU与加速器
 - **NVIDIA**：支持所有CUDA设备（通过nvidia-smi）
@@ -39,42 +49,69 @@
 - 申威处理器
 - IBM Power处理器
 
-## 安装
+## 🚀 一键安装
+
+> 复制下面一行命令，粘贴到终端，回车——就够了。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/install.sh | bash
+```
+
+安装器会自动完成：
+- **克隆最新代码**（优先 SSH → 自动切换 HTTPS）
+- **创建命令软链接**（`server-inspector` 全局可用）
+- **配置 PATH**（永久生效，写入 `~/.bashrc`）
+
+---
 
 ### 系统要求
-- Linux操作系统（内核检测确保安全运行）
-- Python 3.6及以上版本
-- pip
 
-### 安装步骤
+| 项目 | 要求 |
+|------|------|
+| 🐧 系统 | Linux（内核 3.10+） |
+| 🐍 Python | 3.6 及以上（仅用标准库，无需 pip） |
+| 📦 依赖 | 无外部依赖 |
+
+---
+
+### 方式一：一键安装（推荐）
 
 ```bash
-# 克隆仓库
+# 安装
+curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/install.sh | bash
+
+# 立即使用（自动写入 PATH，重开终端后无需再执行）
+source ~/.bashrc
+server-inspector
+```
+
+### 方式二：手动安装
+
+```bash
 git clone https://github.com/b-birdy/server-inspector.git
 cd server-inspector
-
-# 无需外部Python依赖
-# （仅使用Python标准库：subprocess、json、re、platform等）
-
-# 运行工具
-python3 inspector.py --output-dir ./reports --profile profiles.json
+python3 inspector.py --output-dir ./reports
 ```
 
-## 快速开始
+---
+
+## ⚡ 快速开始
 
 ```bash
-# 基本使用 - 在当前目录生成报告
-python3 inspector.py
+# 默认配置，直接运行
+server-inspector
 
-# 指定输出目录
-python3 inspector.py --output-dir /path/to/reports
+# 指定报告输出目录
+server-inspector --output-dir /path/to/reports
 
-# 使用自定义硬件配置文件
-python3 inspector.py --profile custom_profiles.json --output-dir ./reports
+# 使用自定义硬件配置
+server-inspector --profile custom_profiles.json
 
-# 查看帮助信息
-python3 inspector.py --help
+# 查看帮助
+server-inspector --help
 ```
+
+> **💡 提示**：安装后每次打开终端可直接使用 `server-inspector`，无需重新配置。
 
 ## 使用指南
 

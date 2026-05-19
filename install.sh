@@ -178,7 +178,7 @@ fi
 # ─── Install ───
 mkdir -p "$BIN_DIR"
 
-# Clone or update
+# Clone or update (sparse-checkout: only runtime files, skip install.sh/README.md/.gitignore)
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     print_message info "${MUTED}Updating existing installation...${NC}"
     git -C "$INSTALL_DIR" fetch --depth 1 origin "$version_ref" 2>/dev/null || true
@@ -187,11 +187,23 @@ if [[ -d "$INSTALL_DIR/.git" ]]; then
 else
     rm -rf "$INSTALL_DIR"
     print_message info "${MUTED}Cloning $REPO ($version_display)...${NC}"
+    # Use sparse-checkout to only fetch runtime files
+    git init "$INSTALL_DIR" 2>/dev/null
+    git -C "$INSTALL_DIR" remote add origin "https://github.com/$REPO.git" 2>/dev/null || true
+    git -C "$INSTALL_DIR" config core.sparseCheckout true
+    mkdir -p "$INSTALL_DIR/.git/info"
+    printf 'inspector.py\nprofiles.enc\n' > "$INSTALL_DIR/.git/info/sparse-checkout"
     # Try SSH first (port 22, faster), fall back to HTTPS (port 443)
-    if ! git clone --depth 1 --branch "$version_ref" "git@github.com:$REPO.git" "$INSTALL_DIR" 2>/dev/null; then
-        if ! git clone --depth 1 --branch "$version_ref" "https://github.com/$REPO.git" "$INSTALL_DIR" 2>/dev/null; then
-            print_message error "Failed to clone $REPO. Check network connectivity."
-            exit 1
+    if ! git -C "$INSTALL_DIR" pull --depth 1 origin "$version_ref" 2>/dev/null; then
+        if ! git -C "$INSTALL_DIR" pull --depth 1 origin "$version_ref" 2>/dev/null; then
+            # Sparse-checkout failed, fall back to full clone
+            rm -rf "$INSTALL_DIR"
+            if ! git clone --depth 1 --branch "$version_ref" "git@github.com:$REPO.git" "$INSTALL_DIR" 2>/dev/null; then
+                if ! git clone --depth 1 --branch "$version_ref" "https://github.com/$REPO.git" "$INSTALL_DIR" 2>/dev/null; then
+                    print_message error "Failed to clone $REPO. Check network connectivity."
+                    exit 1
+                fi
+            fi
         fi
     fi
 fi

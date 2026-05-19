@@ -93,6 +93,37 @@ cd server-inspector
 python3 inspector.py --output-dir ./reports
 ```
 
+### 卸载
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/install.sh | bash -s -- --uninstall
+```
+
+或手动卸载：
+
+```bash
+rm -rf ~/.local/share/server-inspector
+sed -i '/# server-inspector/d; /server-inspector/d' ~/.bashrc
+source ~/.bashrc
+```
+
+### 安装选项
+
+| 选项 | 说明 |
+|------|------|
+| `-v, --version <tag>` | 安装指定版本/分支（默认 `master`） |
+| `-d, --dir <path>` | 指定安装目录（默认 `~/.local/share/server-inspector`） |
+| `--no-modify-path` | 不修改 shell 配置文件 |
+| `--uninstall` | 卸载并清理 PATH |
+
+```bash
+# 安装指定版本
+curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/install.sh | bash -s -- --version v1.2.0
+
+# 安装到自定义目录
+curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/install.sh | bash -s -- --dir /opt/server-inspector
+```
+
 ---
 
 ## ⚡ 快速开始

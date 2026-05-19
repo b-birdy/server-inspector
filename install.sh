@@ -86,8 +86,27 @@ WRAPPER="$BIN_DIR/server-inspector"
 if [[ "$uninstall" == true ]]; then
     if [[ -d "$install_dir" ]]; then
         rm -rf "$install_dir"
+
+        # Remove PATH entries from shell config files
+        XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+        current_shell=$(basename "$SHELL")
+        case $current_shell in
+            fish) shell_configs="$HOME/.config/fish/config.fish" ;;
+            zsh)  shell_configs="${ZDOTDIR:-$HOME}/.zshrc ${ZDOTDIR:-$HOME}/.zshenv" ;;
+            *)    shell_configs="$HOME/.bashrc $HOME/.bash_profile $HOME/.profile" ;;
+        esac
+
+        for cfg in $shell_configs; do
+            if [[ -f "$cfg" ]]; then
+                # Remove the two lines we added: comment + PATH export
+                sed -i '/# server-inspector/d' "$cfg" 2>/dev/null || true
+                # Also catch fish_add_path line
+                sed -i '/server-inspector/d' "$cfg" 2>/dev/null || true
+            fi
+        done
+
         echo -e "${GREEN}Uninstalled $APP from $install_dir${NC}"
-        echo -e "${ORANGE}Note: You may need to manually remove PATH entries from your shell config.${NC}"
+        echo -e "${GREEN}PATH entries removed from shell config.${NC}"
     else
         echo -e "${ORANGE}$APP is not installed at $install_dir${NC}"
     fi

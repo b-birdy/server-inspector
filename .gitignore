@@ -46,5 +46,6 @@ local_output/
 # Profile 明文配置（仓库内只提交加密的 profiles.enc）
 profiles.json
 
-# 维护脚本（不需要同步到用户机器）
-sync-to-gitee.sh
+# 本地临时文件
+*.tmp
+*.log

@@ -185,11 +185,21 @@ mkdir -p "$BIN_DIR"
 # Prevent interactive git prompts (Gitee HTTPS requires auth, fail cleanly)
 export GIT_TERMINAL_PROMPT=0
 
-# Determine remote protocol: SSH preferred for Gitee, HTTPS works for GitHub
-get_remote_url() {
-    local host=$1
-    local repo=$2
+# Remote URLs: SSH preferred (Gitee auth-free), HTTPS fallback
+get_remote_url_ssh() {
+    local host=$1 repo=$2
     echo "git@${host}:${repo}.git"
+}
+get_remote_url_https() {
+    local host=$1 repo=$2
+    echo "https://${host}/${repo}.git"
+}
+
+# Try fetch with a given remote URL, return 0 on success
+try_fetch() {
+    local repo_dir=$1 url=$2 ref=$3
+    git -C "$repo_dir" remote set-url origin "$url" 2>/dev/null
+    git -C "$repo_dir" fetch --depth 1 origin "$ref" 2>/dev/null
 }
 
 # Configure sparse-checkout to only fetch runtime files
@@ -204,25 +214,30 @@ setup_sparse_checkout() {
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     print_message info "${MUTED}Updating existing installation...${NC}"
     setup_sparse_checkout "$INSTALL_DIR"
-    # Switch remote to SSH if currently HTTPS (Gitee needs SSH for auth-free pull)
-    current_url=$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || echo "")
-    if [[ "$current_url" == https://* ]]; then
-        git -C "$INSTALL_DIR" remote set-url origin "$(get_remote_url "$REPO_HOST" "$REPO")" 2>/dev/null || true
-    fi
-    if ! git -C "$INSTALL_DIR" fetch --depth 1 origin "$version_ref" 2>/dev/null; then
-        print_message error "Failed to fetch update from $REPO_HOST"
-        exit 1
+    # Try SSH first, then HTTPS
+    if ! try_fetch "$INSTALL_DIR" "$(get_remote_url_ssh "$REPO_HOST" "$REPO")" "$version_ref"; then
+        if ! try_fetch "$INSTALL_DIR" "$(get_remote_url_https "$REPO_HOST" "$REPO")" "$version_ref"; then
+            print_message error "Failed to fetch update from $REPO_HOST"
+            exit 1
+        fi
+        print_message info "${GREEN}Using HTTPS protocol${NC}"
     fi
     git -C "$INSTALL_DIR" checkout -f FETCH_HEAD
 else
     rm -rf "$INSTALL_DIR"
     print_message info "${MUTED}Cloning $REPO ($version_display)...${NC}"
     git init "$INSTALL_DIR"
-    git -C "$INSTALL_DIR" remote add origin "$(get_remote_url "$REPO_HOST" "$REPO")"
     setup_sparse_checkout "$INSTALL_DIR"
-    if ! git -C "$INSTALL_DIR" fetch --depth 1 origin "$version_ref" 2>/dev/null; then
-        print_message error "Failed to clone $REPO from $REPO_HOST. Check network connectivity."
-        exit 1
+    # Try SSH first, then HTTPS
+    local ssh_url=$(get_remote_url_ssh "$REPO_HOST" "$REPO")
+    local https_url=$(get_remote_url_https "$REPO_HOST" "$REPO")
+    git -C "$INSTALL_DIR" remote add origin "$ssh_url"
+    if ! try_fetch "$INSTALL_DIR" "$ssh_url" "$version_ref"; then
+        if ! try_fetch "$INSTALL_DIR" "$https_url" "$version_ref"; then
+            print_message error "Failed to clone $REPO from $REPO_HOST. Check network connectivity."
+            exit 1
+        fi
+        print_message info "${GREEN}Using HTTPS protocol${NC}"
     fi
     git -C "$INSTALL_DIR" checkout -f FETCH_HEAD
 fi

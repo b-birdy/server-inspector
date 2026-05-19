@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 APP=server-inspector
-REPO="b-birdy/server-inspector"
+REPO="${REPO:-b-birdy/server-inspector}"
 REPO_HOST="${REPO_HOST:-github.com}"
 
 MUTED='\033[0;2m'

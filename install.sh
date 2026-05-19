@@ -181,9 +181,15 @@ mkdir -p "$BIN_DIR"
 # Clone or update (sparse-checkout: only runtime files, skip install.sh/README.md/.gitignore)
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     print_message info "${MUTED}Updating existing installation...${NC}"
+    # Ensure sparse-checkout is enabled for update
+    git -C "$INSTALL_DIR" config core.sparseCheckout true 2>/dev/null || true
+    mkdir -p "$INSTALL_DIR/.git/info"
+    printf 'inspector.py\nprofiles.enc\n' > "$INSTALL_DIR/.git/info/sparse-checkout"
     git -C "$INSTALL_DIR" fetch --depth 1 origin "$version_ref" 2>/dev/null || true
-    git -C "$INSTALL_DIR" reset --hard "origin/$version_ref" 2>/dev/null || \
-    git -C "$INSTALL_DIR" checkout "$version_ref" 2>/dev/null || true
+    # Use sparse-checkout refiltering instead of reset --hard
+    if ! git -C "$INSTALL_DIR" checkout "origin/$version_ref" -- . 2>/dev/null; then
+        git -C "$INSTALL_DIR" checkout "$version_ref" -- . 2>/dev/null || true
+    fi
 else
     rm -rf "$INSTALL_DIR"
     print_message info "${MUTED}Cloning $REPO ($version_display)...${NC}"

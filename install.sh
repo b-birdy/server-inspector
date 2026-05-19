@@ -2,6 +2,7 @@
 set -euo pipefail
 APP=server-inspector
 REPO="b-birdy/server-inspector"
+REPO_HOST="${REPO_HOST:-github.com}"
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
@@ -22,10 +23,13 @@ Options:
         --no-modify-path    Don't modify shell config files
         --uninstall         Remove server-inspector
 
+Environment:
+    REPO_HOST               Git host (default: github.com, or gitee.com)
+
 Examples:
     curl -fsSL https://your-domain.com/install | bash
     curl -fsSL https://your-domain.com/install | bash -s -- --version v1.2.0
-    ./install.sh --dir /opt/server-inspector
+    REPO_HOST=gitee.com ./install.sh
 EOF
 }
 
@@ -98,10 +102,10 @@ if [[ "$uninstall" == true ]]; then
 
         for cfg in $shell_configs; do
             if [[ -f "$cfg" ]]; then
-                # Remove the two lines we added: comment + PATH export
-                sed -i '/# server-inspector/d' "$cfg" 2>/dev/null || true
-                # Also catch fish_add_path line
-                sed -i '/server-inspector/d' "$cfg" 2>/dev/null || true
+                # Remove the exact lines we added (comment + PATH export)
+                sed -i '/^# server-inspector$/d' "$cfg" 2>/dev/null || true
+                sed -i '/^export PATH=".*server-inspector.*"/d' "$cfg" 2>/dev/null || true
+                sed -i '/^fish_add_path .*server-inspector.*/d' "$cfg" 2>/dev/null || true
             fi
         done
 
@@ -178,40 +182,34 @@ fi
 # ─── Install ───
 mkdir -p "$BIN_DIR"
 
-# Clone or update (sparse-checkout: only runtime files, skip install.sh/README.md/.gitignore)
+# Configure sparse-checkout to only fetch runtime files
+setup_sparse_checkout() {
+    local repo_dir=$1
+    git -C "$repo_dir" config core.sparseCheckout true
+    mkdir -p "$repo_dir/.git/info"
+    printf 'inspector.py\nprofiles.enc\n' > "$repo_dir/.git/info/sparse-checkout"
+}
+
+# Clone or update
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     print_message info "${MUTED}Updating existing installation...${NC}"
-    # Ensure sparse-checkout is enabled for update
-    git -C "$INSTALL_DIR" config core.sparseCheckout true 2>/dev/null || true
-    mkdir -p "$INSTALL_DIR/.git/info"
-    printf 'inspector.py\nprofiles.enc\n' > "$INSTALL_DIR/.git/info/sparse-checkout"
-    git -C "$INSTALL_DIR" fetch --depth 1 origin "$version_ref" 2>/dev/null || true
-    # Use sparse-checkout refiltering instead of reset --hard
-    if ! git -C "$INSTALL_DIR" checkout "origin/$version_ref" -- . 2>/dev/null; then
-        git -C "$INSTALL_DIR" checkout "$version_ref" -- . 2>/dev/null || true
+    setup_sparse_checkout "$INSTALL_DIR"
+    if ! git -C "$INSTALL_DIR" fetch --depth 1 origin "$version_ref"; then
+        print_message error "Failed to fetch update from $REPO_HOST"
+        exit 1
     fi
+    git -C "$INSTALL_DIR" checkout -f FETCH_HEAD
 else
     rm -rf "$INSTALL_DIR"
     print_message info "${MUTED}Cloning $REPO ($version_display)...${NC}"
-    # Use sparse-checkout to only fetch runtime files
-    git init "$INSTALL_DIR" 2>/dev/null
-    git -C "$INSTALL_DIR" remote add origin "https://github.com/$REPO.git" 2>/dev/null || true
-    git -C "$INSTALL_DIR" config core.sparseCheckout true
-    mkdir -p "$INSTALL_DIR/.git/info"
-    printf 'inspector.py\nprofiles.enc\n' > "$INSTALL_DIR/.git/info/sparse-checkout"
-    # Try SSH first (port 22, faster), fall back to HTTPS (port 443)
-    if ! git -C "$INSTALL_DIR" pull --depth 1 origin "$version_ref" 2>/dev/null; then
-        if ! git -C "$INSTALL_DIR" pull --depth 1 origin "$version_ref" 2>/dev/null; then
-            # Sparse-checkout failed, fall back to full clone
-            rm -rf "$INSTALL_DIR"
-            if ! git clone --depth 1 --branch "$version_ref" "git@github.com:$REPO.git" "$INSTALL_DIR" 2>/dev/null; then
-                if ! git clone --depth 1 --branch "$version_ref" "https://github.com/$REPO.git" "$INSTALL_DIR" 2>/dev/null; then
-                    print_message error "Failed to clone $REPO. Check network connectivity."
-                    exit 1
-                fi
-            fi
-        fi
+    git init "$INSTALL_DIR"
+    git -C "$INSTALL_DIR" remote add origin "https://$REPO_HOST/$REPO.git"
+    setup_sparse_checkout "$INSTALL_DIR"
+    if ! git -C "$INSTALL_DIR" fetch --depth 1 origin "$version_ref"; then
+        print_message error "Failed to clone $REPO from $REPO_HOST. Check network connectivity."
+        exit 1
     fi
+    git -C "$INSTALL_DIR" checkout -f FETCH_HEAD
 fi
 
 # Verify inspector.py exists
@@ -340,4 +338,4 @@ if [[ "$no_modify_path" != true && -n "${config_file:-}" ]] && [[ ":$PATH:" != *
     echo ""
 fi
 
-echo -e "${MUTED}Project:${NC} https://github.com/$REPO"
+echo -e "${MUTED}Project:${NC} https://$REPO_HOST/$REPO"

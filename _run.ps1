@@ -1,0 +1,2 @@
+$env:GIT_MASTER = "1"
+git diff --stat

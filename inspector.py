@@ -655,13 +655,19 @@ class HardwareCollector:
             board_out = outputs.get("board", "")
             joined_ascend = overview + "\n" + mem_out + "\n" + board_out
 
-            # 卡数：优先用 `NPU ID :` 字段计数（npu-smi info -l / -t memory 都会输出）
-            cnt = len(re.findall(r"NPU\s*ID\s*:", joined_ascend, re.IGNORECASE))
+            # 卡数：优先用 overview 的型号关键字数（每张卡一行 "| 2  910B4 ..."）。
+            # 不能用 joined_ascend 里的 "NPU ID :" 直接计数 —— v23+ 的 npu-smi info -l
+            # 配合 -t memory / -t board 循环采集会让每张卡的 NPU ID 字段出现多次，
+            # 导致 N 卡机器被算成 2N / 3N。
+            cnt = len(re.findall(
+                r"\b\d+\s+(?:910\w*|310\w*|Ascend\s*9\d{2}\w*)\b",
+                overview, re.IGNORECASE
+            ))
             if not cnt:
-                # overview 中每张卡的行通常形如 "| 0       910B4 ..."，按型号关键字反查
-                cnt = len(re.findall(
-                    r"\b\d+\s+(?:910\w*|310\w*|Ascend)\b", overview, re.IGNORECASE
-                ))
+                # 兜底：从 NPU ID 字段提取集合去重（不论 mem/board 重复几次都只算一张）
+                ids = set(re.findall(r"NPU\s*ID\s*:\s*(\d+)",
+                                     joined_ascend, re.IGNORECASE))
+                cnt = len(ids)
             if cnt:
                 card_count = cnt
 
@@ -832,6 +838,38 @@ class SoftwareCollector:
                     break
             if info.get("CANN 工具链"):
                 break
+
+        # 昇腾 NPU 驱动 / 固件版本
+        for drv_path in [
+            "/usr/local/Ascend/driver/version.info",
+            "/usr/local/Ascend/firmware/version.info",
+        ]:
+            _, dv, _ = run(f"cat {drv_path} 2>/dev/null | head -3")
+            if dv:
+                key = "Ascend NPU 驱动" if "driver" in drv_path else "Ascend NPU 固件"
+                info[key] = dv
+
+        # npu-smi 工具版本（含 v25.2.3 等）
+        if self.reg.has("npu-smi"):
+            _, nsv, _ = run("npu-smi -v 2>/dev/null | head -1")
+            if nsv:
+                info["npu-smi 版本"] = nsv
+
+        # MindIE 服务包（昇腾推理服务）
+        for mindie_path in [
+            "/usr/local/Ascend/mindie/latest",
+            "/usr/local/Ascend/atb-models/latest",
+        ]:
+            _, mv, _ = run(f"cat {mindie_path}/version.info 2>/dev/null | head -3")
+            if mv:
+                key = "MindIE" if "mindie" in mindie_path else "ATB Models"
+                info[key] = mv
+
+        # hccn_tool 集合通信网络检测（NPU 互联）
+        if self.reg.has("hccn_tool"):
+            _, hct, _ = run("hccn_tool -i 0 -ip -g 2>/dev/null | head -3")
+            if hct:
+                info["HCCN (NPU 网络)"] = hct
 
         # Habana
         if self.reg.has("hl-smi"):
@@ -1051,6 +1089,10 @@ class SoftwareCollector:
             ("mindspore", "MindSpore"),
             ("fastdeploy", "FastDeploy"),
             ("habana_frameworks", "Habana Frameworks"),
+            # NPU 后端（昇腾）
+            ("torch_npu", "torch_npu"),
+            ("vllm_ascend", "vLLM-Ascend"),
+            ("mindie", "MindIE"),
         ]:
             _, v, _ = run(f"python3 -c 'import {pkg}; print({pkg}.__version__)' 2>/dev/null")
             if v:
@@ -1145,13 +1187,17 @@ class ReportGenerator:
             goods.append("MPI 已安装，支持多机分布式推理/训练")
 
         ctr = self.sw.get("容器与K8s", {})
+        runtime_env = ctr.get("当前脚本运行环境", "宿主机")
+        in_container = runtime_env != "宿主机"
         if ctr.get("Docker"):
             goods.append("Docker 已安装")
         gpu_ctk = ctr.get("GPU 容器工具", {})
         if gpu_ctk:
             tools = ", ".join(gpu_ctk.keys())
             goods.append(f"GPU 容器工具链: {tools}")
-        else:
+        elif not in_container:
+            # 容器内本就不需要装 nvidia-container-toolkit / ascend-docker-runtime，
+            # 它们部署在宿主机；只在宿主机环境且没装时才提示
             warnings.append("未检测到 GPU 容器工具，容器内调用加速卡会受限")
         if ctr.get("Kubernetes 工具链"):
             goods.append("Kubernetes 工具链已安装")
@@ -1162,13 +1208,21 @@ class ReportGenerator:
         else:
             warnings.append("vLLM 未安装")
 
-        # 特定加速卡建议
+        # 特定加速卡建议：只在该卡的"所有官方推理框架都没装"时才提示
         if self.primary_card:
             pid = self.primary_card.get("_accel_id", "")
-            if pid == "kunlun" and not ml.get("PaddleNLP"):
-                warnings.append("昆仑芯首选推理框架 PaddleNLP 未安装")
-            if pid == "ascend" and not ml.get("MindSpore"):
-                warnings.append("昇腾首选框架 MindSpore 未安装")
+            if pid == "kunlun":
+                # 昆仑芯：PaddleNLP / FastDeploy / vLLM-XPU 任一个就够
+                kunlun_alts = [ml.get("PaddleNLP"), ml.get("FastDeploy"), ml.get("vLLM")]
+                if not any(v and v != "未安装" for v in kunlun_alts):
+                    warnings.append("昆仑芯首选推理框架 PaddleNLP 未安装")
+            if pid == "ascend":
+                # 昇腾：MindSpore / MindIE / vLLM-Ascend / LMDeploy-Ascend 任一就够
+                ascend_alts = [ml.get("MindSpore"), ml.get("MindIE"),
+                               ml.get("vLLM-Ascend"), ml.get("torch_npu"),
+                               ml.get("vLLM"), ml.get("LMDeploy")]
+                if not any(v and v != "未安装" for v in ascend_alts):
+                    warnings.append("昇腾未检测到官方推理框架（MindIE/MindSpore/vLLM-Ascend/LMDeploy-Ascend 任一）")
             if pid == "habana" and not ml.get("Habana Frameworks"):
                 warnings.append("Gaudi 首选框架 habana_frameworks 未安装")
         return {"问题": issues, "警告": warnings, "正常": goods}

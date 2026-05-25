@@ -46,6 +46,27 @@ if sys.platform not in ("linux", "linux2") and "--encode-profile" not in sys.arg
 # 工具函数
 # ─────────────────────────────────────────────
 
+_PCIE_CLASS_RE = re.compile(r"\[([0-9a-fA-F]{4})\]:")
+
+
+def _is_accel_pcie_line(line: str) -> bool:
+    """PCIe class 白名单：只放行可能是加速卡 / GPU 的设备类。
+
+    避免把 AMD/Intel CPU 自带的 Host Bridge / IOMMU / PSP / USB / SATA
+    等设备误判成加速卡（曾把 AMD EPYC 自带 ~149 个 PCIe 桥接器识别成 149 张 ROCm GPU）。
+
+    - 03xx: Display controller (含 VGA / 3D / Other display)
+    - 12xx: Processing accelerators
+    - 0b40: Coprocessor
+    - 1180: Signal processing
+    """
+    m = _PCIE_CLASS_RE.search(line)
+    if not m:
+        return True
+    cls = m.group(1).lower()
+    return cls.startswith(("03", "12")) or cls in ("0b40", "1180")
+
+
 def run(cmd: str, timeout: int = 30) -> Tuple[int, str, str]:
     try:
         env = os.environ.copy()
@@ -505,6 +526,8 @@ class HardwareCollector:
         if lspci_pat:
             _, lspci_raw, _ = run("lspci -nn 2>/dev/null")
             for ln in lspci_raw.splitlines():
+                if not _is_accel_pcie_line(ln):
+                    continue
                 if re.search(lspci_pat, ln, re.IGNORECASE):
                     lspci_out += ln + "\n"
             if lspci_out and not detected:
@@ -520,6 +543,17 @@ class HardwareCollector:
 
         # 匹配规格
         spec = self._match_model_spec(accel, model_name, smi_outputs)
+
+        # 显存兜底：smi 没采到时，用 spec 标称 hbm_gb 填补，避免后续显存约束/性能场景全部失效
+        spec_hbm_gb = spec.get("hbm_gb", 0)
+        if single_mib == 0 and spec_hbm_gb:
+            single_mib = int(spec_hbm_gb * 1024)
+        # 显存 sanity check：smi 采集值与 spec 标称偏离 1.5x 以上视为采集异常（典型场景：
+        # PVE/VMware 等虚机里 nvidia-smi 报告了宿主机总显存或翻倍值），回退到 spec 标称
+        elif spec_hbm_gb and single_mib > 0:
+            spec_mib = spec_hbm_gb * 1024
+            if single_mib > spec_mib * 1.5 or single_mib < spec_mib * 0.5:
+                single_mib = spec_mib
 
         return {
             "_display_name":    accel["display_name"],
@@ -617,17 +651,35 @@ class HardwareCollector:
         # 昇腾
         elif accel_id == "ascend":
             overview = outputs.get("overview", "")
-            cnt = len(re.findall(r"NPU\s+\d+", overview))
+            mem_out = outputs.get("mem", "")
+            board_out = outputs.get("board", "")
+            joined_ascend = overview + "\n" + mem_out + "\n" + board_out
+
+            # 卡数：优先用 `NPU ID :` 字段计数（npu-smi info -l / -t memory 都会输出）
+            cnt = len(re.findall(r"NPU\s*ID\s*:", joined_ascend, re.IGNORECASE))
+            if not cnt:
+                # overview 中每张卡的行通常形如 "| 0       910B4 ..."，按型号关键字反查
+                cnt = len(re.findall(
+                    r"\b\d+\s+(?:910\w*|310\w*|Ascend)\b", overview, re.IGNORECASE
+                ))
             if cnt:
                 card_count = cnt
-            # 显存可能在 memory query
-            mem_out = outputs.get("mem", "") + overview
-            mm = re.findall(r"(\d+)\s*/\s*(\d+)\s*MB", mem_out)
-            if mm:
-                single_mib = int(mm[0][1])
+
+            # 显存：优先 `HBM Capacity(MB) : N`（最稳）
+            m = re.search(r"HBM\s+Capacity\s*\(MB\)\s*:\s*(\d+)",
+                          joined_ascend, re.IGNORECASE)
+            if m and int(m.group(1)) > 100:
+                single_mib = int(m.group(1))
+            else:
+                # 回落到 "X / Y MB" 模式（部分老版本 npu-smi 输出）
+                mm = re.findall(r"(\d+)\s*/\s*(\d+)\s*MB", joined_ascend)
+                if mm:
+                    # 取最大的 Y 作为 HBM 容量（避免拿到 DDR 或 hugepage）
+                    single_mib = max(int(y) for _, y in mm)
+
             # 型号关键字
             for kw in ["910C", "910B4", "910B3", "910B", "910A", "910", "310P", "310"]:
-                if kw in overview:
+                if kw in joined_ascend:
                     model_name = "Ascend " + kw
                     break
 
@@ -650,16 +702,27 @@ class HardwareCollector:
 
         return card_count, single_mib, model_name
 
+    @staticmethod
+    def _norm_card_name(s: str) -> str:
+        """卡型号比较用的归一化：大小写、空格/下划线/连字符差异统一抹平。"""
+        return re.sub(r"[\s_\-]+", "", (s or "")).upper()
+
     def _match_model_spec(self, accel: Dict, model_name: str,
                           outputs: Dict[str, str]) -> Dict:
-        """根据 model_name 在 profile.model_specs 中找匹配。"""
+        """根据 model_name 在 profile.model_specs 中找匹配。
+
+        归一化后做 substring 匹配，使 "RTX 4070 Ti SUPER" 和 "RTX-4070-TI-SUPER"
+        被视为同一型号。spec 列表按"长字符串在前"维护，避免短型号截胡（如
+        "RTX 4090 D" 必须排在 "RTX 4090" 之前）。
+        """
+        norm_model = self._norm_card_name(model_name)
         for spec in accel.get("model_specs", []):
-            if spec["match"].lower() in (model_name or "").lower():
+            if self._norm_card_name(spec["match"]) in norm_model:
                 return spec
-        # 二次匹配：在所有 smi 输出中找
-        joined = "\n".join(outputs.values())
+        # 二次匹配：在所有 smi 输出里找（型号字段未抓到时兜底）
+        norm_joined = self._norm_card_name("\n".join(outputs.values()))
         for spec in accel.get("model_specs", []):
-            if spec["match"].lower() in joined.lower():
+            if self._norm_card_name(spec["match"]) in norm_joined:
                 return spec
         return accel.get("default_spec", {})
 
@@ -1062,7 +1125,15 @@ class ReportGenerator:
 
         rdma_info = self.sw.get("RDMA与集群", {}).get("RDMA 工具集", {})
         if rdma_info:
-            goods.append("RDMA 工具完整 (perftest/diag 套件可用)")
+            parts = []
+            if rdma_info.get("基础工具", "无") != "无":
+                parts.append("基础")
+            if rdma_info.get("性能测试", "无") != "无":
+                parts.append("perftest")
+            if rdma_info.get("诊断工具", "无") != "无":
+                parts.append("诊断")
+            if parts:
+                goods.append(f"RDMA 工具集已安装（{' / '.join(parts)}）")
         rdma_link = self.hw.get("网络", {}).get("RDMA链路状态(ibstatus)", "")
         if "ACTIVE" in rdma_link:
             active_cnt = rdma_link.count("ACTIVE")
@@ -1198,6 +1269,8 @@ class ReportGenerator:
             max_cards = tpl.get("max_cards", 9999)
             if cnt < min_cards:
                 continue
+            if cnt > max_cards:
+                continue
             # 双机场景下，要求至少 8 卡（默认假定双机 = 当前节点×2 推算）
             if tpl.get("id") == "multi_node_16" and cnt < 8:
                 continue
@@ -1245,7 +1318,8 @@ class ReportGenerator:
                     continue
                 # 基于 NVIDIA 对标基准估算性能
                 weight_gb = int4 if precision.startswith("INT") else fp16
-                perf = self._estimate_perf(tpl.get("id", ""), model, precision, total_gb, weight_gb)
+                perf = self._estimate_perf(tpl.get("id", ""), model, precision,
+                                            total_gb, weight_gb, actual_cards)
 
                 entry = {
                     "模型":      model["name"],
@@ -1301,23 +1375,56 @@ class ReportGenerator:
         # 超出 large 的（>80B 激活），归到 large（已是上限）
         return "large" if active_b > 5 else "tiny"
 
-    def _lookup_nvidia_perf(self, scenario_id: str, active_b: float) -> Optional[Dict[str, List[int]]]:
+    def _resolve_cards_key(self, match_str: str, cards: Dict) -> Optional[str]:
+        """根据 spec.match（如 "A100" / "RTX 4070 Ti SUPER"）在 cards 表里找对应 key。
+        归一化后做完全 / 前缀 / 双向 substring 匹配，对 "A100" → "A100-80GB-SXM"
+        以及 "RTX 4070 Ti SUPER" → "RTX-4070-TI-SUPER" 都能命中。
+        """
+        if not match_str:
+            return None
+        norm_q = HardwareCollector._norm_card_name(match_str)
+        norm_map = {HardwareCollector._norm_card_name(k): k for k in cards.keys()}
+        if norm_q in norm_map:
+            return norm_map[norm_q]
+        # 双向 substring：spec.match 是 cards key 前缀（A100 → A10080GBSXM），或反之
+        for nk, ok in norm_map.items():
+            if nk.startswith(norm_q) or norm_q.startswith(nk) or norm_q in nk or nk in norm_q:
+                return ok
+        return None
+
+    def _lookup_nvidia_perf(self, scenario_id: str, active_b: float,
+                            actual_cards: int = 0) -> Optional[Dict[str, List[int]]]:
         """查询 primary_card 对标的 NVIDIA 卡在指定场景+档位的基准数据。
         返回 None 表示无法对标（缺少 nvidia_equivalent 或基准未配置）。
         """
         if not self.primary_card:
             return None
         spec = self.primary_card.get("_spec", {})
+        accel_id = self.primary_card.get("_accel_id", "")
         ne = spec.get("nvidia_equivalent")
+        # NVIDIA 自家卡：spec 不需要显式 nvidia_equivalent，自动对标 spec.match 自身（perf_ratio=1.0）
+        if not ne and accel_id == "nvidia":
+            match = spec.get("match", "")
+            if match:
+                ne = {"card": match, "perf_ratio": 1.0}
         if not ne:
             return None
         bench_root = self.profile.get("nvidia_reference_benchmarks", {})
         cards = bench_root.get("cards", {})
-        target_card = ne.get("card", "A100-80GB-SXM")
+        target_card_raw = ne.get("card", "A100-80GB-SXM")
         a100 = cards.get("A100-80GB-SXM", {})
-        # A100 是基准，其它卡通过 vs_a100_multiplier 推算
-        target = cards.get(target_card, {})
-        a100_scenario = a100.get(scenario_id, {})
+        # 找 cards 表对应 key（容忍 hyphen / 空格 / 后缀差异）
+        resolved = self._resolve_cards_key(target_card_raw, cards)
+        target = cards.get(resolved, {}) if resolved else {}
+        target_card = resolved or target_card_raw
+        # single_node_small 没有独立基准，借用 single_node_8 然后按卡数线性缩放
+        lookup_id = scenario_id
+        scale_to_actual = 1.0
+        if scenario_id == "single_node_small":
+            lookup_id = "single_node_8"
+            if actual_cards > 0:
+                scale_to_actual = max(0.2, actual_cards / 8.0)
+        a100_scenario = a100.get(lookup_id, {})
         tier = self._active_param_tier(active_b)
         a100_tier = a100_scenario.get(tier)
         # 若当前 tier 在该场景下无配置，沿就近档位回退
@@ -1336,7 +1443,11 @@ class ReportGenerator:
         if not a100_tier:
             return None
         if target_card == "A100-80GB-SXM":
-            base = a100_tier
+            base = {
+                "single_tps": list(a100_tier["single_tps"]),
+                "total_tps":  list(a100_tier["total_tps"]),
+                "ttft_ms":    list(a100_tier["ttft_ms"]),
+            }
         else:
             mult = target.get("vs_a100_multiplier", 1.0)
             base = {
@@ -1347,10 +1458,15 @@ class ReportGenerator:
                 "ttft_ms":    [max(20, int(a100_tier["ttft_ms"][0] / mult)),
                                max(30, int(a100_tier["ttft_ms"][1] / mult))],
             }
+        # single_node_small 按实际卡数线性缩放（单流TPS不变，总吞吐和 TTFT 按比例）
+        if scale_to_actual != 1.0:
+            base["total_tps"] = [int(base["total_tps"][0] * scale_to_actual),
+                                 int(base["total_tps"][1] * scale_to_actual)]
         return base
 
     def _estimate_perf(self, scenario_id: str, model: Dict, precision: str,
-                       total_gb: float, weight_gb: float) -> Dict[str, str]:
+                       total_gb: float, weight_gb: float,
+                       actual_cards: int = 0) -> Dict[str, str]:
         """基于 NVIDIA 基准 × 对标系数 + INT4 加速 + 显存约束并发，估算各项指标。
         返回字段：单流TPS / 总吞吐 / TTFT / 并发(估)。
         """
@@ -1362,7 +1478,7 @@ class ReportGenerator:
         ne = spec.get("nvidia_equivalent", {})
         perf_ratio = float(ne.get("perf_ratio", 0.5))
 
-        bench = self._lookup_nvidia_perf(scenario_id, active_b)
+        bench = self._lookup_nvidia_perf(scenario_id, active_b, actual_cards)
         # 没有 NVIDIA 基准时给保守默认值（避免给出误导性的高估）
         if bench is None:
             tps_lo, tps_hi = 8, 18

@@ -544,16 +544,13 @@ class HardwareCollector:
         # 匹配规格
         spec = self._match_model_spec(accel, model_name, smi_outputs)
 
-        # 显存兜底：smi 没采到时，用 spec 标称 hbm_gb 填补，避免后续显存约束/性能场景全部失效
-        spec_hbm_gb = spec.get("hbm_gb", 0)
-        if single_mib == 0 and spec_hbm_gb:
-            single_mib = int(spec_hbm_gb * 1024)
-        # 显存 sanity check：smi 采集值与 spec 标称偏离 1.5x 以上视为采集异常（典型场景：
-        # PVE/VMware 等虚机里 nvidia-smi 报告了宿主机总显存或翻倍值），回退到 spec 标称
-        elif spec_hbm_gb and single_mib > 0:
-            spec_mib = spec_hbm_gb * 1024
-            if single_mib > spec_mib * 1.5 or single_mib < spec_mib * 0.5:
-                single_mib = spec_mib
+        # 显存策略：始终信任 smi 实测值；smi 取不到（=0）才用 spec 标称 hbm_gb 兜底。
+        # 不做 sanity check 回退 —— 魔改显存（如 2060 SUPER 改 16GB）、SR-IOV
+        # 切片、vGPU 等场景下 smi 报告的就是真实可用值，覆盖会破坏检测。
+        if single_mib == 0:
+            spec_hbm_gb = spec.get("hbm_gb", 0)
+            if spec_hbm_gb:
+                single_mib = int(spec_hbm_gb * 1024)
 
         return {
             "_display_name":    accel["display_name"],
@@ -569,7 +566,12 @@ class HardwareCollector:
             "卡数":             card_count,
             "单卡显存":         f"{single_mib} MiB ({single_mib/1024:.1f} GB)" if single_mib else "未知",
             "总显存":           f"{single_mib*card_count} MiB ({single_mib*card_count/1024:.1f} GB)" if single_mib else "未知",
-            "BF16 TFLOPS":      f"{spec.get('bf16_tflops','?')} TFLOPS/卡",
+            "BF16 TFLOPS":      (
+                "不支持" if spec.get("bf16_tflops") == 0
+                else (f"{spec.get('bf16_tflops')} TFLOPS/卡"
+                      if spec.get("bf16_tflops") not in (None, "")
+                      else "暂无数据")
+            ),
             "PCIe":             spec.get("pcie", "未知"),
             "互联":             spec.get("interconnect", "未知"),
             "TDP":              f"{spec.get('tdp_w','?')} W",
@@ -1124,7 +1126,14 @@ class ReportGenerator:
         self.hw = hw
         self.sw = sw
         self.profile = profile
-        self.hostname = hostname.split(".")[0]
+        # 主机名兜底：抓不到时按运行环境给一个概括性描述
+        h = (hostname or "").strip().split(".")[0]
+        if not h:
+            env = sw.get("容器与K8s", {}).get("当前脚本运行环境", "宿主机")
+            h = {"docker容器": "Docker 容器",
+                 "K8S容器":     "K8S 容器",
+                 "宿主机":       "物理服务器"}.get(env, "物理服务器")
+        self.hostname = h
         self.ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.tool_version = profile.get("tool_version", "v1.2.0")
         accel = hw.get("算力卡", {})
@@ -1273,17 +1282,28 @@ class ReportGenerator:
         for m in self.profile.get("models_2026", []):
             r = dict(m)
             tvram = self.total_vram_gb
+            fp16_gb = m["fp16_gb"]
+            int4_gb = m["int4_gb"]
+            # int8 显存：约为 fp16 的一半（业界经验）；profile 显式给定优先
+            int8_gb = m.get("int8_gb", round(fp16_gb / 2))
+            r["int8_gb"] = int8_gb
+
             if tvram == 0:
                 r["状态"] = "❌ 无算力卡"
                 r["建议精度"] = "—"
-            elif tvram >= m["fp16_gb"]:
-                r["状态"] = "✅ 总显存充足，FP16/BF16 可直接部署"
+            elif tvram >= fp16_gb:
+                r["状态"] = f"✅ 总显存 {tvram:.0f}GB ≥ BF16 需求 {fp16_gb}GB，可直接部署"
                 r["建议精度"] = "BF16"
-            elif tvram >= m["int4_gb"]:
-                r["状态"] = "⚠️ 仅满足量化部署"
-                r["建议精度"] = "INT4/INT8 (AWQ/GPTQ)"
+            elif tvram >= int8_gb:
+                r["状态"] = (f"⚠️ 总显存 {tvram:.0f}GB 不够 BF16（需 {fp16_gb}GB），"
+                             f"可上 INT8 量化（需 {int8_gb}GB）")
+                r["建议精度"] = "INT8 (W8A16)"
+            elif tvram >= int4_gb:
+                r["状态"] = (f"⚠️ 总显存 {tvram:.0f}GB 仅满足 INT4 量化（需 {int4_gb}GB），"
+                             f"BF16/INT8 显存不足")
+                r["建议精度"] = "INT4 (AWQ/GPTQ)"
             else:
-                r["状态"] = f"❌ 显存不足（需 ≥{m['int4_gb']}GB，现 {tvram:.0f}GB）"
+                r["状态"] = f"❌ 显存不足（INT4 需 ≥{int4_gb}GB，现 {tvram:.0f}GB）"
                 r["建议精度"] = "—"
 
             # 框架适配
@@ -2114,10 +2134,32 @@ class ReportGenerator:
             a("| 参数 | 值 |")
             a("|:----|:----|")
             a(f"| 型号 | {self.primary_card.get('卡型号','?')} |")
-            a(f"| BF16 算力 | {spec.get('bf16_tflops','?')} TFLOPS |")
-            a(f"| INT8 算力 | {spec.get('int8_tops','?')} TOPS |")
-            a(f"| HBM 容量 | {spec.get('hbm_gb','?')} GB |")
-            a(f"| HBM 带宽 | {spec.get('hbm_bw_tbps','?')} TB/s |")
+
+            # 算力字段：FP32/FP16 总显示（不支持/缺数据时分别给标识）；
+            # BF16/INT8/INT4 按是否支持展示。
+            def _fmt_tflops(v, unit="TFLOPS"):
+                if v is None or v == "":
+                    return "暂无数据"
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    return str(v)
+                if fv == 0:
+                    return "不支持"
+                return f"{fv:g} {unit}"
+
+            a(f"| FP32 算力 | {_fmt_tflops(spec.get('fp32_tflops'))} |")
+            a(f"| FP16 算力 | {_fmt_tflops(spec.get('fp16_tflops'))} |")
+            if "bf16_tflops" in spec:
+                a(f"| BF16 算力 | {_fmt_tflops(spec.get('bf16_tflops'))} |")
+            if "int8_tops" in spec:
+                a(f"| INT8 算力 | {_fmt_tflops(spec.get('int8_tops'), 'TOPS')} |")
+            if "int4_tops" in spec:
+                a(f"| INT4 算力 | {_fmt_tflops(spec.get('int4_tops'), 'TOPS')} |")
+            a(f"| 显存容量 | {spec.get('hbm_gb','?')} GB |")
+            a(f"| 显存带宽 | {spec.get('hbm_bw_tbps','?')} TB/s |")
+            if spec.get("memory_type"):
+                a(f"| 显存类型 | {spec['memory_type']} |")
             a(f"| 功耗 (TDP) | {spec.get('tdp_w','?')} W |")
             a(f"| PCIe / 形态 | {spec.get('pcie','?')} |")
             a(f"| 互联 | {spec.get('interconnect','?')} |")
@@ -2126,31 +2168,25 @@ class ReportGenerator:
         a("## 🤖 五、模型兼容性评估")
         a("")
         a("> 基于当前硬件配置对 **2026 年主流开源大语言模型** 的部署可行性评估")
+        a("> 显存需求按权重粗算（不含 KV Cache），实际部署还要预留 10-30% 给上下文窗口。")
         a("")
-        a("| 模型 | 厂商 | 参数 | 激活 | 上下文 | FP16 需求 | INT4 需求 | 状态 | 建议精度 | 框架适配 |")
-        a("|:----|:----|:----|:----|:----:|----:|----:|:----|:----:|:----|")
+        a("| 模型 | 厂商 | 参数 | 激活 | 上下文 | BF16 显存 | INT8 显存 | INT4 显存 | 状态 | 建议精度 | 框架适配 |")
+        a("|:----|:----|:----|:----|:----:|----:|----:|----:|:----|:----:|:----|")
         for m in mods:
             a(
                 f"| **{m['name']}** | {m['vendor']} | {m['params']} | {m['active']} "
-                f"| {m['context']} | {m['fp16_gb']} GB | {m['int4_gb']} GB "
+                f"| {m['context']} | {m['fp16_gb']} GB | {m['int8_gb']} GB | {m['int4_gb']} GB "
                 f"| {m['状态']} | {m['建议精度']} | {m['框架适配']} |"
             )
         a("")
 
         a("## 📊 六、性能预估")
         a("")
-        a("> 估算方法：基于 NVIDIA A100/H100 在 vLLM/SGLang 公开基准（input/output=256/256 token）的实测数据，"
-          "按当前卡型的对标系数（`nvidia_equivalent.perf_ratio`）折算；多卡场景另叠加并行扩展效率。")
-        # 标注对标卡和系数（提升透明度）
-        if self.primary_card:
-            ne = self.primary_card.get("_spec", {}).get("nvidia_equivalent")
-            if ne:
-                a("")
-                a(f"> **对标基准**：`{ne['card']}` × **{ne['perf_ratio']:.0%}** "
-                  f"{('—— ' + ne.get('note', '')) if ne.get('note') else ''}")
+        a("> 基于该卡的公开技术参数（算力、显存带宽、互联方式）和行业推理基准的理论推算，"
+          "未做实测，仅用于硬件选型期的可行性参考。")
         a("")
         if not scns:
-            a("*未匹配到适用场景（可能是显存不足或卡型未识别）*")
+            a("*未匹配到适用场景（典型原因：单卡显存不足以承载评估清单中的任一模型，或卡型未在数据库中收录）。*")
             a("")
         else:
             for idx, s in enumerate(scns, 1):
@@ -2185,16 +2221,17 @@ class ReportGenerator:
                     a(f"**建议用途：** {s['建议用途']}")
                     a("")
 
-        a("### 性能指标说明")
-        a("")
-        a("| 指标 | 全称 | 说明 |")
-        a("|:----|:----|:----|")
-        a("| TTFT | Time To First Token | 首 Token 延迟（用户感知的关键指标） |")
-        a("| TPS | Tokens Per Second | 单流生成速度 |")
-        a("| 并发 | Concurrent Sequences | 服务能稳定支撑的并发数 |")
-        a("| 总吞吐 | Total Throughput | 多并发下系统总 token/s |")
-        a("| MFU | Model FLOP Utilization | 算力利用率，越高越好 |")
-        a("")
+            # 性能指标说明：仅在有场景输出时展示
+            a("### 性能指标说明")
+            a("")
+            a("| 指标 | 全称 | 说明 |")
+            a("|:----|:----|:----|")
+            a("| TTFT | Time To First Token | 首 Token 延迟（用户感知的关键指标） |")
+            a("| TPS | Tokens Per Second | 单流生成速度 |")
+            a("| 并发 | Concurrent Sequences | 服务能稳定支撑的并发数 |")
+            a("| 总吞吐 | Total Throughput | 多并发下系统总 token/s |")
+            a("| MFU | Model FLOP Utilization | 算力利用率，越高越好 |")
+            a("")
 
         a("---")
         a("")

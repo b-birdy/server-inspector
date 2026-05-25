@@ -88,28 +88,45 @@ WRAPPER="$BIN_DIR/server-inspector"
 
 # ─── Uninstall ───
 if [[ "$uninstall" == true ]]; then
+    uninstalled=false
+
+    # Remove the ~/.local/bin command symlink (if present and points to us)
+    user_bin_link="$HOME/.local/bin/server-inspector"
+    if [[ -L "$user_bin_link" ]]; then
+        link_target=$(readlink "$user_bin_link" 2>/dev/null || true)
+        case "$link_target" in
+            *server-inspector*)
+                rm -f "$user_bin_link"
+                echo -e "${GREEN}Removed command symlink: $user_bin_link${NC}"
+                uninstalled=true
+                ;;
+        esac
+    fi
+
     if [[ -d "$install_dir" ]]; then
         rm -rf "$install_dir"
-
-        # Remove PATH entries from shell config files
-        XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
-        current_shell=$(basename "$SHELL")
-        case $current_shell in
-            fish) shell_configs="$HOME/.config/fish/config.fish" ;;
-            zsh)  shell_configs="${ZDOTDIR:-$HOME}/.zshrc ${ZDOTDIR:-$HOME}/.zshenv" ;;
-            *)    shell_configs="$HOME/.bashrc $HOME/.bash_profile $HOME/.profile" ;;
-        esac
-
-        for cfg in $shell_configs; do
-            if [[ -f "$cfg" ]]; then
-                # Remove the exact lines we added (comment + PATH export)
-                sed -i '/^# server-inspector$/d' "$cfg" 2>/dev/null || true
-                sed -i '/^export PATH=".*server-inspector.*"/d' "$cfg" 2>/dev/null || true
-                sed -i '/^fish_add_path .*server-inspector.*/d' "$cfg" 2>/dev/null || true
-            fi
-        done
-
         echo -e "${GREEN}Uninstalled $APP from $install_dir${NC}"
+        uninstalled=true
+    fi
+
+    # Remove PATH entries from shell config files
+    XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+    current_shell=$(basename "$SHELL")
+    case $current_shell in
+        fish) shell_configs="$HOME/.config/fish/config.fish" ;;
+        zsh)  shell_configs="${ZDOTDIR:-$HOME}/.zshrc ${ZDOTDIR:-$HOME}/.zshenv" ;;
+        *)    shell_configs="$HOME/.bashrc $HOME/.bash_profile $HOME/.profile" ;;
+    esac
+
+    # 删除我们添加的两行（# server-inspector 注释 + 紧随的 PATH 行），
+    # 避免误删用户自己加的其它 PATH 配置。
+    for cfg in $shell_configs; do
+        if [[ -f "$cfg" ]]; then
+            sed -i '/^# server-inspector$/,+1d' "$cfg" 2>/dev/null || true
+        fi
+    done
+
+    if [[ "$uninstalled" == true ]]; then
         echo -e "${GREEN}PATH entries removed from shell config.${NC}"
     else
         echo -e "${ORANGE}$APP is not installed at $install_dir${NC}"
@@ -226,6 +243,8 @@ if [[ ! -f "$INSTALL_DIR/profiles.enc" ]]; then
 fi
 
 # Create wrapper script
+# 注意：用 readlink -f 解析 symlink，让 wrapper 通过 ~/.local/bin 的 symlink
+# 调用时仍能正确定位 repo 目录。
 cat > "$WRAPPER" <<'WRAPPER_EOF'
 #!/usr/bin/env bash
 # Server Inspector launcher
@@ -233,7 +252,23 @@ cat > "$WRAPPER" <<'WRAPPER_EOF'
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the real script location, following symlinks (e.g., ~/.local/bin link)
+if command -v readlink >/dev/null 2>&1 && readlink -f / >/dev/null 2>&1; then
+    REAL_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+else
+    # Fallback for systems without GNU readlink -f
+    REAL_PATH="${BASH_SOURCE[0]}"
+    while [[ -L "$REAL_PATH" ]]; do
+        link_target="$(readlink "$REAL_PATH")"
+        if [[ "$link_target" = /* ]]; then
+            REAL_PATH="$link_target"
+        else
+            REAL_PATH="$(cd "$(dirname "$REAL_PATH")" && cd "$(dirname "$link_target")" && pwd)/$(basename "$link_target")"
+        fi
+    done
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "$REAL_PATH")" && pwd)"
 REPO_DIR="$SCRIPT_DIR/repo"
 PYTHON="${SERVER_INSPECTOR_PYTHON:-python3}"
 
@@ -246,6 +281,21 @@ exec "$PYTHON" "$REPO_DIR/inspector.py" "$@"
 WRAPPER_EOF
 
 chmod +x "$WRAPPER"
+
+# ─── Symlink to ~/.local/bin (XDG standard user bin) ───
+# 优先把命令入口放到 ~/.local/bin，这是大多数现代 Linux 发行版
+# (Ubuntu 20.04+/Debian 10+/Fedora/RHEL8+/Rocky/Alma) 默认就在 PATH 里的目录。
+# 这样很多用户安装完无需 source 任何文件即可直接使用 server-inspector 命令。
+USER_BIN="$HOME/.local/bin"
+SYMLINK="$USER_BIN/server-inspector"
+symlink_ok=false
+
+if mkdir -p "$USER_BIN" 2>/dev/null && [[ -w "$USER_BIN" ]]; then
+    if ln -sfn "$WRAPPER" "$SYMLINK" 2>/dev/null; then
+        symlink_ok=true
+        print_message success "Linked command: $SYMLINK"
+    fi
+fi
 
 # ─── PATH setup ───
 add_to_path() {
@@ -287,8 +337,23 @@ case $current_shell in
         ;;
 esac
 
-if [[ "$no_modify_path" != true ]]; then
-    config_file=""
+# 决定本次安装需要让哪个目录出现在 PATH：
+#   - symlink 创建成功 → 使用 $USER_BIN (~/.local/bin)，多数发行版默认已在 PATH
+#   - symlink 失败（无权限/异常）→ fallback 到 $BIN_DIR（旧逻辑）
+if [[ "$symlink_ok" == true ]]; then
+    PATH_TARGET="$USER_BIN"
+else
+    PATH_TARGET="$BIN_DIR"
+fi
+
+# 判断当前 shell 启动时 PATH 已经包含目标目录 → 不需要改 rc 文件
+case ":${PATH:-}:" in
+    *":$PATH_TARGET:"*) path_already_present=true ;;
+    *) path_already_present=false ;;
+esac
+
+config_file=""
+if [[ "$no_modify_path" != true && "$path_already_present" != true ]]; then
     for file in $config_files; do
         if [[ -f $file ]]; then
             config_file=$file
@@ -298,24 +363,24 @@ if [[ "$no_modify_path" != true ]]; then
 
     if [[ -z $config_file ]]; then
         print_message warning "No shell config found. Add to PATH manually:"
-        print_message info "  export PATH=\"$BIN_DIR:\$PATH\""
-    elif [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+        print_message info "  export PATH=\"$PATH_TARGET:\$PATH\""
+    else
         case $current_shell in
             fish)
-                add_to_path "$config_file" "fish_add_path $BIN_DIR"
+                add_to_path "$config_file" "fish_add_path $PATH_TARGET"
                 ;;
             *)
-                add_to_path "$config_file" "export PATH=\"$BIN_DIR:\$PATH\""
+                add_to_path "$config_file" "export PATH=\"$PATH_TARGET:\$PATH\""
                 ;;
         esac
-    else
-        print_message info "${MUTED}$BIN_DIR already in PATH${NC}"
     fi
+elif [[ "$path_already_present" == true ]]; then
+    print_message info "${MUTED}$PATH_TARGET already in PATH${NC}"
 fi
 
 # GitHub Actions support
 if [[ -n "${GITHUB_ACTIONS:-}" ]] && [[ "${GITHUB_ACTIONS}" == "true" ]]; then
-    echo "$BIN_DIR" >> "$GITHUB_PATH"
+    echo "$PATH_TARGET" >> "$GITHUB_PATH"
     print_message info "Added to \$GITHUB_PATH"
 fi
 
@@ -333,24 +398,25 @@ echo "  server-inspector --help             ${MUTED}# Show help${NC}"
 echo "  server-inspector --output-dir ./reports ${MUTED}# Specify output dir${NC}"
 echo ""
 
-# If PATH was modified, ask to source now
-if [[ "$no_modify_path" != true && -n "${config_file:-}" ]] && [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+# PATH activation guidance
+# install.sh 在子进程中运行，无法修改父 shell 的 PATH，
+# 所以这里只能根据 PATH 状态输出对应引导。
+if [[ "$path_already_present" == true ]]; then
+    # 目标目录在 PATH 中（通常是 ~/.local/bin），命令立即可用
+    echo -e "${GREEN}✅ server-inspector 命令已可在当前 shell 直接使用${NC}"
+    echo -e "   验证: ${GREEN}server-inspector --help${NC}"
     echo ""
-    echo -e "${ORANGE}需要执行以下命令将 server-inspector 添加到当前会话的 PATH：${NC}"
-    echo -e "  source $config_file"
-    echo -ne "${ORANGE}是否现在执行？[Y/n]: ${NC}"
-    if [[ -t 0 ]]; then
-        read -r response
-    else
-        read -r response </dev/tty 2>/dev/null || response="Y"
-    fi
-    response=${response:-Y}
-    if [[ "$response" =~ ^[Yy] ]]; then
-        source "$config_file" 2>/dev/null || true
-        echo -e "${GREEN}✅ PATH 已生效，当前会话即可使用 server-inspector${NC}"
-    else
-        echo -e "${MUTED}⏭ 跳过。稍后可手动执行: source $config_file${NC}"
-    fi
+elif [[ "$no_modify_path" != true && -n "${config_file:-}" ]]; then
+    echo -e "${ORANGE}⚠ 当前 shell 还无法识别 server-inspector 命令${NC}"
+    echo -e "${MUTED}(PATH 配置已写入 $config_file，但需要在你自己的 shell 中重新加载)${NC}"
+    echo ""
+    echo -e "请任选其一让命令生效："
+    echo -e "  ${GREEN}A.${NC} 在当前 shell 执行: ${GREEN}source $config_file${NC}"
+    echo -e "  ${GREEN}B.${NC} 或重启当前 shell:   ${GREEN}exec \$SHELL -l${NC}"
+    echo -e "  ${GREEN}C.${NC} 或打开一个新终端"
+    echo ""
+    echo -e "${MUTED}也可直接用绝对路径立即验证安装结果：${NC}"
+    echo -e "  ${GREEN}$WRAPPER --help${NC}"
     echo ""
 fi
 

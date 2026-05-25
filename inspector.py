@@ -1372,6 +1372,7 @@ class ReportGenerator:
 
             for model in models:
                 fp16 = model["fp16_gb"]
+                int8 = model.get("int8_gb", round(fp16 / 2))
                 int4 = model["int4_gb"]
                 ok = False
                 precision = "BF16"
@@ -1380,12 +1381,16 @@ class ReportGenerator:
                     cap = single_gb * match_rule["max_gb_per_card_ratio"]
                     if fp16 <= cap:
                         ok, precision, vram_used = True, "BF16", f"~{fp16} GB"
+                    elif int8 <= cap:
+                        ok, precision, vram_used = True, "INT8", f"~{int8} GB"
                     elif int4 <= cap:
                         ok, precision, vram_used = True, "INT4/AWQ", f"~{int4} GB"
                 if "max_gb_total_ratio" in match_rule:
                     cap = total_gb * match_rule["max_gb_total_ratio"]
                     if fp16 <= cap:
                         ok, precision, vram_used = True, "BF16", f"~{fp16} GB（权重）+ KV"
+                    elif int8 * 1.3 <= cap:
+                        ok, precision, vram_used = True, "INT8", f"~{int8} GB（权重）+ KV"
                     elif int4 * 1.5 <= cap:
                         ok, precision, vram_used = True, "INT4/AWQ", f"~{int4} GB（权重）+ KV"
                 if not ok:
@@ -1491,13 +1496,11 @@ class ReportGenerator:
         resolved = self._resolve_cards_key(target_card_raw, cards)
         target = cards.get(resolved, {}) if resolved else {}
         target_card = resolved or target_card_raw
-        # single_node_small 没有独立基准，借用 single_node_8 然后按卡数线性缩放
+        # single_node_8 现在覆盖 2-8 卡。卡数 <8 时按 actual/8 线性缩放基准
         lookup_id = scenario_id
         scale_to_actual = 1.0
-        if scenario_id == "single_node_small":
-            lookup_id = "single_node_8"
-            if actual_cards > 0:
-                scale_to_actual = max(0.2, actual_cards / 8.0)
+        if scenario_id == "single_node_8" and 0 < actual_cards < 8:
+            scale_to_actual = max(0.2, actual_cards / 8.0)
         a100_scenario = a100.get(lookup_id, {})
         tier = self._active_param_tier(active_b)
         a100_tier = a100_scenario.get(tier)
@@ -1953,13 +1956,13 @@ class ReportGenerator:
             a("")
             a("| 参数 | 值 |")
             a("|:----|:----|")
-            spec = card["_spec"]
-            for k in ["卡型号", "卡数", "单卡显存", "总显存", "BF16 TFLOPS", "PCIe", "互联", "TDP"]:
+            # 这里只展示"检测到的拓扑/形态"信息，详细算力/显存规格留给下面的
+            # "性能及规格参考"表，避免与之重复
+            for k in ["卡型号", "卡数", "单卡显存", "总显存", "PCIe", "互联", "TDP"]:
                 if k in card:
                     bold = k in ("卡型号", "卡数", "单卡显存", "总显存")
                     val = card[k]
                     a(f"| {k} | **{val}** |" if bold else f"| {k} | {val} |")
-            a(f"| HBM 带宽 | {spec.get('hbm_bw_tbps','?')} TB/s |")
             a(f"| 推荐框架 | {', '.join(card.get('_frameworks', []))} |")
             a("")
             if card.get("PCIe设备列表") and card["PCIe设备列表"] != "未检测":
@@ -2129,7 +2132,7 @@ class ReportGenerator:
 
         if self.primary_card:
             spec = self.primary_card["_spec"]
-            a(f"### {self.primary_card['_display_name']} 硬件规格参考")
+            a(f"### {self.primary_card['_display_name']} 性能及规格参考")
             a("")
             a("| 参数 | 值 |")
             a("|:----|:----|")
@@ -2156,7 +2159,16 @@ class ReportGenerator:
                 a(f"| INT8 算力 | {_fmt_tflops(spec.get('int8_tops'), 'TOPS')} |")
             if "int4_tops" in spec:
                 a(f"| INT4 算力 | {_fmt_tflops(spec.get('int4_tops'), 'TOPS')} |")
-            a(f"| 显存容量 | {spec.get('hbm_gb','?')} GB |")
+            # 显存容量：先展示标称值；若实测值与标称差 ≥ 1 GB（魔改卡 / SR-IOV /
+            # vGPU 等场景），追加"（实测 X GB）"提示
+            spec_hbm = spec.get("hbm_gb")
+            actual_mib = self.primary_card.get("_single_vram_mib", 0)
+            mem_cell = f"{spec_hbm} GB" if spec_hbm is not None else "?"
+            if spec_hbm and actual_mib:
+                actual_gb = actual_mib / 1024
+                if abs(actual_gb - spec_hbm) >= 1:
+                    mem_cell = f"{spec_hbm} GB（实测 {actual_gb:.0f} GB）"
+            a(f"| 显存容量 | {mem_cell} |")
             a(f"| 显存带宽 | {spec.get('hbm_bw_tbps','?')} TB/s |")
             if spec.get("memory_type"):
                 a(f"| 显存类型 | {spec['memory_type']} |")
@@ -2182,8 +2194,8 @@ class ReportGenerator:
 
         a("## 📊 六、性能预估")
         a("")
-        a("> 基于该卡的公开技术参数（算力、显存带宽、互联方式）和行业推理基准的理论推算，"
-          "未做实测，仅用于硬件选型期的可行性参考。")
+        a("> 基于该卡的公开技术参数（算力、显存带宽、互联方式）和行业推理基准的理论推算得出，"
+          "模型及框架的支持能力以厂家提供的最新文档为准，此处仅用于硬件选型期的可行性参考。")
         a("")
         if not scns:
             a("*未匹配到适用场景（典型原因：单卡显存不足以承载评估清单中的任一模型，或卡型未在数据库中收录）。*")
@@ -2461,7 +2473,7 @@ a:hover{text-decoration:underline}
   </div>
   <div class="meta-item">
     <span class="meta-label">工具</span>
-    <span class="meta-value">Server Inspector v1.2.0</span>
+    <span class="meta-value">Server Inspector {html_lib.escape(self.tool_version)}</span>
   </div>
   <div class="meta-item">
     <span class="meta-label">算力</span>

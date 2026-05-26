@@ -124,6 +124,80 @@ def _resolve_profile_path(path: str) -> Optional[Path]:
     return next((c for c in candidates if c.exists()), None)
 
 
+def write_contribution_file(hostname: str, hw: Dict, sw: Dict,
+                            profile: Dict, unknown_items: List[Dict]) -> Optional[Path]:
+    """检测到未收录硬件时，把结构化数据写到 ~/.server-inspector/contribute/<ts>_<host>.json。
+
+    不含敏感信息（用户名/密码/公网 IP/绝对路径）。返回文件路径，无则 None。
+    """
+    if not unknown_items:
+        return None
+    contrib_dir = Path.home() / ".server-inspector" / "contribute"
+    try:
+        contrib_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"⚠️  贡献目录创建失败 ({contrib_dir}): {e}", file=sys.stderr)
+        return None
+
+    now = datetime.datetime.now()
+    ts = now.strftime("%Y%m%d-%H%M%S")
+    h_short = (hostname or "unknown").split(".")[0] or "unknown"
+    out_path = contrib_dir / f"{ts}_{h_short}.json"
+
+    accel = hw.get("算力卡", {})
+    cpu = hw.get("CPU", {})
+    os_info = sw.get("操作系统", {})
+    drv = sw.get("驱动程序", {})
+
+    payload = {
+        "schema_version":   "1.0",
+        "submit_time":      now.strftime("%Y-%m-%d %H:%M:%S"),
+        "tool_version":     profile.get("tool_version", "?"),
+        "hostname":         h_short,
+        "os":               os_info.get("发行版", ""),
+        "kernel":           os_info.get("内核版本", ""),
+        "unknown_items":    unknown_items,
+        "raw_data": {
+            "cpu_summary": {
+                k: cpu.get(k, "")
+                for k in ["厂商", "型号", "架构", "物理CPU数", "每CPU核数",
+                          "总线程数", "最大主频", "向量指令集", "NUMA节点数",
+                          "虚拟化"]
+            },
+            "lspci_nn":     run("lspci -nn 2>/dev/null", timeout=15)[1],
+            "lscpu":        run("lscpu 2>/dev/null", timeout=15)[1],
+            "accel_summary": {
+                "detected_types":    accel.get("_检测到的卡型", []),
+                "no_accelerator":    bool(accel.get("_无算力卡", False)),
+                "other_pcie":        accel.get("其他PCIe加速设备", ""),
+                "detected_cards": [
+                    {
+                        "display_name":     c.get("_display_name", ""),
+                        "vendor":           c.get("_vendor", ""),
+                        "accel_id":         c.get("_accel_id", ""),
+                        "model_name":       c.get("_model_name", ""),
+                        "card_count":       c.get("_card_count", 0),
+                        "single_vram_mib":  c.get("_single_vram_mib", 0),
+                        "pcie_devices":     c.get("PCIe设备列表", ""),
+                        "smi_outputs":      c.get("命令摘要", {}),
+                    }
+                    for c in accel.get("_detected_cards", [])
+                ],
+            },
+            "drivers": {
+                k: v for k, v in drv.items()
+                if isinstance(v, (str, int, float))
+            },
+        },
+    }
+
+    out_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return out_path
+
+
 def load_profile(path: str) -> Dict:
     """加载 profile。优先加密 .enc，回退到明文 .json。"""
     chosen = _resolve_profile_path(path)
@@ -1146,6 +1220,68 @@ class ReportGenerator:
         )
         self.total_vram_gb = self.total_vram_mib / 1024
         self.primary_card  = self.detected_cards[0] if self.detected_cards else None
+        # 新硬件贡献：自动检测当前环境是否含数据库未收录的硬件
+        self.unknown_items = self._detect_unknown_hardware()
+        # 贡献文件路径由 main() 写完后回填
+        self.contribution_path: Optional[str] = None
+
+    def _detect_unknown_hardware(self) -> List[Dict]:
+        """识别 CPU/GPU/加速卡中数据库未收录的项。返回结构化清单。"""
+        items: List[Dict] = []
+        accel = self.hw.get("算力卡", {})
+
+        # 1. 没有任何加速卡，但 lspci 看到 display/accelerator 类设备
+        if accel.get("_无算力卡") and accel.get("其他PCIe加速设备"):
+            items.append({
+                "type": "gpu",
+                "summary": "lspci 检测到 PCIe display/accelerator 设备，但所有厂商 SMI/lspci_pattern 均未命中",
+                "details": {"pcie_devices": accel["其他PCIe加速设备"]},
+            })
+
+        # 2. 卡被识别到厂商但 model_name 没命中 model_specs（落到 default_spec）
+        for card in self.detected_cards:
+            model_name = card.get("_model_name", "")
+            spec = card.get("_spec", {})
+            # default_spec 是没有 "match" 字段的 dict；model_specs 条目必有 "match"
+            falled_to_default = "match" not in spec
+            if falled_to_default or not model_name:
+                items.append({
+                    "type": "gpu",
+                    "summary": (f"{card.get('_display_name','?')} 检测到 "
+                                f"× {card.get('_card_count','?')} 卡，"
+                                f"但卡型号未匹配数据库 model_specs"),
+                    "details": {
+                        "display_name":      card.get("_display_name", ""),
+                        "vendor":            card.get("_vendor", ""),
+                        "accel_id":          card.get("_accel_id", ""),
+                        "model_name_raw":    model_name or "",
+                        "card_count":        card.get("_card_count", 0),
+                        "single_vram_mib":   card.get("_single_vram_mib", 0),
+                        "pcie_devices":      card.get("PCIe设备列表", ""),
+                        "smi_summary":       card.get("命令摘要", {}),
+                    },
+                })
+
+        # 3. CPU 厂商未识别
+        cpu = self.hw.get("CPU", {})
+        cpu_vendor = (cpu.get("厂商", "") or "").strip()
+        cpu_model = cpu.get("型号", "")
+        if not cpu_vendor or cpu_vendor in ("未识别", "未知", "Unknown"):
+            items.append({
+                "type": "cpu",
+                "summary": f"CPU 厂商无法识别（型号: {cpu_model or '未知'}）",
+                "details": {
+                    "vendor_raw":  cpu_vendor or "",
+                    "model":       cpu_model,
+                    "arch":        cpu.get("架构", ""),
+                    "phys_cpus":   cpu.get("物理CPU数", ""),
+                    "cores_per":   cpu.get("每CPU核数", ""),
+                    "threads":     cpu.get("总线程数", ""),
+                    "vector_isa":  cpu.get("向量指令集", ""),
+                },
+            })
+
+        return items
 
     def analyze(self) -> Dict:
         issues: List[str] = []
@@ -2245,6 +2381,38 @@ class ReportGenerator:
             a("| MFU | Model FLOP Utilization | 算力利用率，越高越好 |")
             a("")
 
+        # 七、新硬件贡献提示（仅在检测到未收录硬件时显示）
+        if self.unknown_items:
+            a("## 🆕 七、新硬件贡献提示")
+            a("")
+            a(f"本次扫描检测到 **{len(self.unknown_items)}** 项数据库未收录的硬件：")
+            a("")
+            for i, item in enumerate(self.unknown_items, 1):
+                a(f"{i}. **[{item['type'].upper()}]** {item['summary']}")
+            a("")
+            if self.contribution_path:
+                a("已为您生成贡献数据文件：")
+                a("")
+                a(f"```\n{self.contribution_path}\n```")
+                a("")
+            contrib_cfg = self.profile.get("contribution", {})
+            issue_url = contrib_cfg.get("issue_url", "")
+            email = contrib_cfg.get("contact_email", "")
+            if issue_url or email:
+                a("如愿意贡献这份硬件数据帮助完善项目数据库，请通过以下任一方式发送给维护者：")
+                a("")
+                if issue_url:
+                    a(f"- **Gitee Issue（推荐）：** <{issue_url}>")
+                    a("  在 Issue 描述里附上 JSON 内容即可")
+                if email:
+                    a(f"- **邮箱：** {email}")
+                    a("  将 JSON 文件作为附件发送")
+                a("")
+            a("> **隐私说明**：贡献文件仅包含硬件配置（CPU/GPU 型号、显存、驱动版本、PCIe 拓扑等），"
+              "不含用户名、密码、公网 IP、文件系统路径等敏感信息。"
+              "您可在发送前打开 JSON 查看完整内容，确认后再发送。")
+            a("")
+
         a("---")
         a("")
         a('<div class="notice" markdown="1">')
@@ -2582,6 +2750,13 @@ def main():
     hostname = os_info.get("主机名", socket.gethostname())
     reporter = ReportGenerator(hw, sw, hostname, profile)
 
+    # 检测到未收录硬件时，落地一份贡献文件；路径回填到 reporter
+    contrib_path = write_contribution_file(
+        hostname, hw, sw, profile, reporter.unknown_items
+    )
+    if contrib_path:
+        reporter.contribution_path = str(contrib_path)
+
     md_content   = reporter.to_markdown()
     html_content = reporter.to_html(md_content)
 
@@ -2639,6 +2814,15 @@ def main():
     dep = reporter.recommend()
     print(f"\n\033[1m📊 建议部署方式: {dep['部署方式']}\033[0m")
     print(f"🔧 推荐框架: {', '.join(dep['推荐框架'][:2])}")
+
+    if reporter.contribution_path:
+        print(f"\n\033[35m🆕 检测到 {len(reporter.unknown_items)} 项未收录硬件，已生成贡献文件：\033[0m")
+        print(f"   {reporter.contribution_path}")
+        contrib_cfg = profile.get("contribution", {})
+        if contrib_cfg.get("issue_url"):
+            print(f"   提交方式：Gitee Issue {contrib_cfg['issue_url']}")
+        if contrib_cfg.get("contact_email"):
+            print(f"            或 邮箱 {contrib_cfg['contact_email']}")
     print()
 
 

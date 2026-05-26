@@ -46,6 +46,12 @@ local_output/
 # Profile 明文配置（仓库内只提交加密的 profiles.enc）
 profiles.json
 
+# 数据库时间戳备份（本地维护历史，不进仓库）
+backups/
+
+# 用户上报的贡献 JSON（如果维护者把上报数据放进项目目录的话）
+contribute/
+
 # 本地临时文件
 *.tmp
 *.log

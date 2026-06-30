@@ -1624,6 +1624,41 @@ class ReportGenerator:
                     return plan
         return None
 
+    def _collapse_model_families(self, models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        ordered_keys: List[str] = []
+
+        for model in models:
+            family = str(model.get("family") or model.get("name") or "")
+            if family not in grouped:
+                grouped[family] = []
+                ordered_keys.append(family)
+            grouped[family].append(model)
+
+        selected: List[Dict[str, Any]] = []
+        for family in ordered_keys:
+            variants = sorted(
+                grouped[family],
+                key=lambda item: (
+                    -int(item.get("priority", 0) or 0),
+                    item.get("name", ""),
+                ),
+            )
+            latest = variants[0]
+            chosen = next((item for item in variants if item.get("_best_plan")), latest)
+            chosen = dict(chosen)
+
+            if chosen.get("name") != latest.get("name") and latest.get("name"):
+                fallback_note = (
+                    f"同系列更新模型 {latest['name']} 在当前硬件 / 上下文目标下不可部署，"
+                    f"当前回退评估 {chosen['name']}"
+                )
+                base_notes = chosen.get("notes", "")
+                chosen["notes"] = f"{fallback_note}；{base_notes}" if base_notes else fallback_note
+
+            selected.append(chosen)
+        return selected
+
     def _benchmark_commands(self) -> List[Dict[str, str]]:
         cmds: List[Dict[str, str]] = []
         for model in self.evaluate_models():
@@ -1794,7 +1829,7 @@ class ReportGenerator:
             else:
                 r["框架适配"] = "⚠️ 当前卡型可能需手工适配"
             results.append(r)
-        return results
+        return self._collapse_model_families(results)
 
     def perf_scenarios(self) -> List[Dict]:
         """性能边界估算：按场景输出 Decode / Prefill 的理论上限。"""
@@ -1811,7 +1846,7 @@ class ReportGenerator:
         display = card["_display_name"]
         frameworks = card.get("_frameworks", [])
         interconnect = spec.get("interconnect", "未知")
-        models = self.profile.get("models_2026", [])
+        models = self.evaluate_models()
 
         for tpl in self.profile.get("scenario_templates", []):
             min_cards = tpl.get("min_cards", 1)

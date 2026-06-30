@@ -55,3 +55,6 @@ contribute/
 # 本地临时文件
 *.tmp
 *.log
+
+# Local agent workspace metadata
+.agents/

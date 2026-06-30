@@ -12,6 +12,11 @@
 
 一个通用的硬件容量评估工具，用于评估服务器在大语言模型推理部署中的性能表现。自动检测并分析CPU、内存、加速器、存储、网络和软件生态等硬件信息。
 
+## 🔗 仓库地址
+
+- **GitHub 主仓**：[b-birdy/server-inspector](https://github.com/b-birdy/server-inspector)
+- **Gitee 镜像**：[wzxdcyy/server-inspector](https://gitee.com/wzxdcyy/server-inspector)
+
 ## ✨ 功能特性
 
 - **多加速器支持**：支持11种以上GPU/加速器（NVIDIA、AMD、海光、昆仑、昇腾、浪潮、寒武纪、壁仞、沐曦、摩尔线程、Habana）
@@ -57,6 +62,12 @@
 curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/install.sh | bash
 ```
 
+国内网络环境可直接使用 Gitee 镜像：
+
+```bash
+curl -fsSL https://gitee.com/wzxdcyy/server-inspector/raw/master/install.sh | REPO_HOST=gitee.com REPO=wzxdcyy/server-inspector bash
+```
+
 安装器会自动完成：
 - **克隆最新代码**（优先 SSH → 自动切换 HTTPS）
 - **创建命令软链接**（`server-inspector` 全局可用）
@@ -80,6 +91,9 @@ curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/ins
 # 安装
 curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/install.sh | bash
 
+# 使用 Gitee 镜像安装
+curl -fsSL https://gitee.com/wzxdcyy/server-inspector/raw/master/install.sh | REPO_HOST=gitee.com REPO=wzxdcyy/server-inspector bash
+
 # 立即使用（自动写入 PATH，重开终端后无需再执行）
 source ~/.bashrc
 server-inspector
@@ -88,7 +102,12 @@ server-inspector
 ### 方式二：手动安装
 
 ```bash
+# GitHub 主仓
 git clone https://github.com/b-birdy/server-inspector.git
+
+# 或 Gitee 镜像
+git clone https://gitee.com/wzxdcyy/server-inspector.git
+
 cd server-inspector
 python3 inspector.py --output-dir ./reports
 ```
@@ -122,7 +141,12 @@ curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/ins
 
 # 安装到自定义目录
 curl -fsSL https://raw.githubusercontent.com/b-birdy/server-inspector/master/install.sh | bash -s -- --dir /opt/server-inspector
+
+# 从 Gitee 镜像安装指定版本
+curl -fsSL https://gitee.com/wzxdcyy/server-inspector/raw/master/install.sh | REPO_HOST=gitee.com REPO=wzxdcyy/server-inspector bash -s -- --version v1.2.0
 ```
+
+> `install.sh` 同时支持 GitHub / Gitee / 私有 fork。需要切换下载源时，设置 `REPO_HOST` 和 `REPO` 环境变量即可。
 
 ---
 

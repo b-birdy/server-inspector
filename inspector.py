@@ -616,7 +616,7 @@ class HardwareCollector:
         )
 
         # 匹配规格
-        spec = self._match_model_spec(accel, model_name, smi_outputs)
+        spec = self._match_model_spec(accel, model_name, smi_outputs, lspci_out)
 
         # 显存策略：始终信任 smi 实测值；smi 取不到（=0）才用 spec 标称 hbm_gb 兜底。
         # 不做 sanity check 回退 —— 魔改显存（如 2060 SUPER 改 16GB）、SR-IOV
@@ -709,10 +709,20 @@ class HardwareCollector:
             cnt_raw = outputs.get("count", "").strip()
             if cnt_raw.isdigit() and int(cnt_raw) > 0:
                 card_count = int(cnt_raw)
+            else:
+                card_count = len([l for l in lspci_out.splitlines() if l.strip()])
+
             name = outputs.get("name", "")
-            m = re.search(r"(Z100\w*|K100\w*)", name, re.IGNORECASE)
+            hw = outputs.get("hw", "")
+            hygon_evidence = "\n".join([name, hw, lspci_out])
+            m = re.search(r"(BW3000|Z100\w*|K100(?:-AI)?\w*)", hygon_evidence, re.IGNORECASE)
             if m:
                 model_name = m.group(1).upper()
+            elif re.search(r"Card Series:\s*BW", name, re.IGNORECASE) and (
+                re.search(r"\bDID\s+6320\b", hw, re.IGNORECASE)
+                or "[1D94:6320]" in hygon_evidence.upper()
+            ):
+                model_name = "BW3000"
 
         # 昆仑芯（xpu-smi 格式）
         elif accel_id == "kunlun":
@@ -790,7 +800,7 @@ class HardwareCollector:
         return re.sub(r"[\s_\-]+", "", (s or "")).upper()
 
     def _match_model_spec(self, accel: Dict, model_name: str,
-                          outputs: Dict[str, str]) -> Dict:
+                          outputs: Dict[str, str], lspci_out: str = "") -> Dict:
         """根据 model_name 在 profile.model_specs 中找匹配。
 
         归一化后做 substring 匹配，使 "RTX 4070 Ti SUPER" 和 "RTX-4070-TI-SUPER"
@@ -801,11 +811,21 @@ class HardwareCollector:
         for spec in accel.get("model_specs", []):
             if self._norm_card_name(spec["match"]) in norm_model:
                 return spec
-        # 二次匹配：在所有 smi 输出里找（型号字段未抓到时兜底）
-        norm_joined = self._norm_card_name("\n".join(outputs.values()))
+        # 二次匹配：在所有 SMI 输出和 lspci 证据链里找（型号字段未抓到时兜底）
+        norm_joined = self._norm_card_name(lspci_out + "\n" + "\n".join(outputs.values()))
         for spec in accel.get("model_specs", []):
             if self._norm_card_name(spec["match"]) in norm_joined:
                 return spec
+            for dev_id in spec.get("device_ids", []):
+                if self._norm_card_name(dev_id) in norm_joined:
+                    return spec
+            for marker in spec.get("smi_markers", []):
+                if self._norm_card_name(marker) in norm_joined:
+                    return spec
+            for sub_id in spec.get("subsystem_ids", []):
+                norm_sub = self._norm_card_name(sub_id)
+                if norm_sub and len(norm_sub) >= 4 and norm_sub in norm_joined:
+                    return spec
         return accel.get("default_spec", {})
 
 
@@ -817,6 +837,41 @@ class SoftwareCollector:
     def __init__(self, profile: Dict, registry: CommandRegistry):
         self.profile = profile
         self.reg = registry
+
+    @staticmethod
+    def _parse_visible_devices(raw: str) -> Optional[int]:
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        upper = raw.upper()
+        if upper in ("ALL",):
+            return None
+        if upper in ("NONE", "VOID", "NO_DEVICES"):
+            return 0
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        return len(parts) if parts else None
+
+    def _collect_runtime_visibility(self) -> Dict[str, Any]:
+        info: Dict[str, Any] = {}
+        counts: List[int] = []
+        for env_key in [
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+            "NVIDIA_VISIBLE_DEVICES",
+        ]:
+            raw = os.environ.get(env_key, "").strip()
+            if not raw:
+                continue
+            info[env_key] = raw
+            parsed = self._parse_visible_devices(raw)
+            if parsed is not None:
+                counts.append(parsed)
+        if counts:
+            info["容器可见卡数(按环境变量推断)"] = min(counts)
+        else:
+            info["容器可见卡数(按环境变量推断)"] = "未显式限制"
+        return info
 
     def collect_os(self) -> Dict:
         info: Dict[str, Any] = {}
@@ -1148,12 +1203,45 @@ class SoftwareCollector:
         if conda:
             info["Conda"] = conda
 
-        _, torch_v, _ = run(
-            "python3 -c 'import torch; "
-            "print(torch.__version__, \"|\", \"CUDA:\", torch.cuda.is_available(), "
-            "\"|\", \"Devices:\", torch.cuda.device_count())' 2>/dev/null"
+        runtime_visibility = self._collect_runtime_visibility()
+
+        _, torch_raw, _ = run(
+            "python3 -c 'import json, torch; "
+            "print(json.dumps({"
+            "\"version\": torch.__version__, "
+            "\"cuda_available\": torch.cuda.is_available(), "
+            "\"device_count\": torch.cuda.device_count(), "
+            "\"cuda_version\": getattr(torch.version, \"cuda\", None), "
+            "\"hip_version\": getattr(torch.version, \"hip\", None)"
+            "}, ensure_ascii=False))' 2>/dev/null"
         )
-        info["PyTorch"] = (torch_v or "未安装").replace("|", "·")
+        torch_info: Dict[str, Any] = {}
+        if torch_raw:
+            try:
+                torch_info = json.loads(torch_raw)
+            except json.JSONDecodeError:
+                torch_info = {}
+
+        if torch_info:
+            backend = "HIP/DTK" if torch_info.get("hip_version") else (
+                "CUDA" if torch_info.get("cuda_version") else "unknown"
+            )
+            info["PyTorch"] = (
+                f"{torch_info.get('version', '未知版本')} · "
+                f"Backend: {backend} · "
+                f"CUDA API: {torch_info.get('cuda_available')} · "
+                f"Devices: {torch_info.get('device_count', 0)}"
+            )
+            runtime_visibility["PyTorch可见卡数"] = torch_info.get("device_count", 0)
+            runtime_visibility["PyTorch后端"] = backend
+            if torch_info.get("hip_version"):
+                runtime_visibility["HIP Runtime"] = torch_info["hip_version"]
+            elif torch_info.get("cuda_version"):
+                runtime_visibility["CUDA Runtime"] = torch_info["cuda_version"]
+        else:
+            info["PyTorch"] = "未安装"
+
+        info["运行时可见性"] = runtime_visibility
 
         for pkg, label in [
             ("vllm", "vLLM"),
@@ -1353,6 +1441,20 @@ class ReportGenerator:
         else:
             warnings.append("vLLM 未安装")
 
+        runtime_vis = ml.get("运行时可见性", {})
+        torch_visible = runtime_vis.get("PyTorch可见卡数")
+        env_visible = runtime_vis.get("容器可见卡数(按环境变量推断)")
+        if isinstance(torch_visible, int) and self.accel_count and torch_visible < self.accel_count:
+            warnings.append(
+                f"运行时仅暴露 {torch_visible} 张加速卡，低于物理检测到的 {self.accel_count} 张；"
+                "容器或调度器侧可能做了设备可见性限制"
+            )
+        elif isinstance(env_visible, int) and self.accel_count and env_visible < self.accel_count:
+            warnings.append(
+                f"环境变量推断当前仅允许访问 {env_visible} 张加速卡，"
+                f"低于物理检测到的 {self.accel_count} 张"
+            )
+
         # 特定加速卡建议：只在该卡的"所有官方推理框架都没装"时才提示
         if self.primary_card:
             pid = self.primary_card.get("_accel_id", "")
@@ -1380,23 +1482,246 @@ class ReportGenerator:
         active_cnt = rdma_link.count("ACTIVE")
         return active_cnt >= 2  # 至少2路ACTIVE
 
+    @staticmethod
+    def _parse_numeric_scale(text: str, default: float = 0.0) -> float:
+        m = re.search(r"([\d.]+)", str(text or ""))
+        return float(m.group(1)) if m else default
+
+    @staticmethod
+    def _parse_context_tokens(text: str) -> int:
+        raw = (text or "").strip().upper().replace(" ", "")
+        m = re.search(r"([\d.]+)([KM]?)", raw)
+        if not m:
+            return 32768
+        value = float(m.group(1))
+        unit = m.group(2)
+        if unit == "M":
+            return int(value * 1024 * 1024)
+        if unit == "K":
+            return int(value * 1024)
+        return int(value)
+
+    @staticmethod
+    def _architecture_of(model: Dict) -> str:
+        params = str(model.get("params", "")).lower()
+        return "moe" if "moe" in params else "dense"
+
+    def _candidate_tp_sizes(self) -> List[int]:
+        cnt = max(self.accel_count, 0)
+        if cnt <= 0:
+            return [1]
+        vals = [1]
+        for v in [2, 4, 8]:
+            if v <= cnt:
+                vals.append(v)
+        if cnt not in vals:
+            vals.append(cnt)
+        return sorted(set(vals))
+
+    def _precision_weight_gb(self, model: Dict, precision: str) -> float:
+        precision = precision.upper()
+        if precision.startswith("BF16") or precision.startswith("FP16"):
+            return float(model.get("fp16_gb", 0))
+        if precision.startswith("INT8"):
+            return float(model.get("int8_gb", round(float(model.get("fp16_gb", 0)) / 2)))
+        return float(model.get("int4_gb", 0))
+
+    def _runtime_overhead_gb(self, model: Dict, precision: str,
+                             weight_per_card_gb: float, tp: int) -> float:
+        accel_id = self.primary_card.get("_accel_id", "") if self.primary_card else ""
+        arch = self._architecture_of(model)
+        ratio = 0.18 if arch == "dense" else 0.15
+        if precision.upper().startswith("INT"):
+            ratio *= 0.90
+        vendor_multiplier = 1.0
+        reserved_gb = 2.0
+        if accel_id == "hygon":
+            vendor_multiplier = 1.10
+            reserved_gb = 3.0
+        elif accel_id in ("kunlun", "ascend", "cambricon", "biren", "metax", "moorethreads"):
+            vendor_multiplier = 1.05
+            reserved_gb = 2.5
+        # TP 越高，通信与运行时缓冲开销越大
+        tp_penalty = 1.0 + max(0, tp - 1) * 0.03
+        return weight_per_card_gb * ratio * vendor_multiplier * tp_penalty + reserved_gb
+
+    def _kv_per_sequence_gb(self, model: Dict, tp: int) -> float:
+        total_b = self._parse_numeric_scale(model.get("params", ""), 0.0)
+        active_b = self._parse_numeric_scale(model.get("active", ""), total_b)
+        context_tokens = self._parse_context_tokens(model.get("context", "32K"))
+        context_scale = max(0.25, context_tokens / 131072.0)
+        if self._architecture_of(model) == "moe":
+            model_scale = max(total_b / 16.0, active_b / 4.0)
+        else:
+            model_scale = total_b / 16.0
+        kv_gb = context_scale * model_scale * 1.1 / max(tp, 1)
+        return max(0.5, kv_gb)
+
+    def _plan_for_model(self, model: Dict, precision: str, tp: int) -> Dict[str, Any]:
+        if not self.primary_card or self.accel_count <= 0:
+            return {"ok": False, "reason": "无可用加速卡"}
+        if tp > self.accel_count:
+            return {"ok": False, "reason": f"当前仅检测到 {self.accel_count} 张卡"}
+
+        single_mem_gb = self.accel_mem_gb
+        usable_per_card_gb = single_mem_gb * 0.90
+        total_weight_gb = self._precision_weight_gb(model, precision)
+        weight_per_card_gb = total_weight_gb / max(tp, 1)
+        runtime_overhead_gb = self._runtime_overhead_gb(model, precision, weight_per_card_gb, tp)
+        kv_budget_gb = usable_per_card_gb - weight_per_card_gb - runtime_overhead_gb
+        kv_per_seq_gb = self._kv_per_sequence_gb(model, tp)
+        max_concurrency = int(kv_budget_gb / kv_per_seq_gb) if kv_budget_gb > 0 else 0
+
+        if kv_budget_gb <= 0:
+            return {
+                "ok": False,
+                "tp": tp,
+                "precision": precision,
+                "weight_per_card_gb": weight_per_card_gb,
+                "runtime_overhead_gb": runtime_overhead_gb,
+                "kv_budget_gb": kv_budget_gb,
+                "kv_per_seq_gb": kv_per_seq_gb,
+                "max_concurrency": 0,
+                "reason": (
+                    f"单卡可用 {usable_per_card_gb:.1f}GB，扣除权重 {weight_per_card_gb:.1f}GB 和"
+                    f" 运行时开销 {runtime_overhead_gb:.1f}GB 后，KV 预算为 {kv_budget_gb:.1f}GB"
+                ),
+            }
+        if max_concurrency < 1:
+            return {
+                "ok": False,
+                "tp": tp,
+                "precision": precision,
+                "weight_per_card_gb": weight_per_card_gb,
+                "runtime_overhead_gb": runtime_overhead_gb,
+                "kv_budget_gb": kv_budget_gb,
+                "kv_per_seq_gb": kv_per_seq_gb,
+                "max_concurrency": 0,
+                "reason": (
+                    f"权重可装载，但目标上下文下单序列 KV 约需 {kv_per_seq_gb:.1f}GB/卡，"
+                    f"当前仅剩 {kv_budget_gb:.1f}GB/卡"
+                ),
+            }
+        return {
+            "ok": True,
+            "tp": tp,
+            "precision": precision,
+            "weight_per_card_gb": weight_per_card_gb,
+            "runtime_overhead_gb": runtime_overhead_gb,
+            "kv_budget_gb": kv_budget_gb,
+            "kv_per_seq_gb": kv_per_seq_gb,
+            "max_concurrency": max_concurrency,
+            "usable_per_card_gb": usable_per_card_gb,
+        }
+
+    def _best_plan_for_model(self, model: Dict) -> Optional[Dict[str, Any]]:
+        for precision in ["BF16", "INT8", "INT4"]:
+            if self._precision_weight_gb(model, precision) <= 0:
+                continue
+            for tp in self._candidate_tp_sizes():
+                plan = self._plan_for_model(model, precision, tp)
+                if plan.get("ok"):
+                    return plan
+        return None
+
+    def _benchmark_commands(self) -> List[Dict[str, str]]:
+        cmds: List[Dict[str, str]] = []
+        for model in self.evaluate_models():
+            plan = model.get("_best_plan")
+            if not plan:
+                continue
+            max_len = self._parse_context_tokens(model.get("context", "32K"))
+            cmds.append({
+                "模型": model["name"],
+                "建议": f"{plan['precision']} / TP={plan['tp']}",
+                "命令": (
+                    "vllm serve <model_path> "
+                    f"--tensor-parallel-size {plan['tp']} "
+                    "--gpu-memory-utilization 0.5 "
+                    "--max-num-seqs 1 "
+                    f"--max-model-len {max_len} "
+                    "--enforce-eager"
+                ),
+            })
+            if len(cmds) >= 2:
+                break
+        return cmds
+
+    def _performance_confidence(self) -> str:
+        accel_id = self.primary_card.get("_accel_id", "") if self.primary_card else ""
+        if accel_id == "nvidia":
+            return "中"
+        if accel_id in ("hygon", "kunlun", "ascend", "cambricon", "biren", "metax", "moorethreads"):
+            return "低"
+        return "中低"
+
+    def _estimate_perf_bounds(self, model: Dict, plan: Dict[str, Any],
+                              actual_cards: int) -> Dict[str, str]:
+        spec = self.primary_card.get("_spec", {}) if self.primary_card else {}
+        bw_tbps = float(spec.get("hbm_bw_tbps", 0) or 0)
+        bf16_tflops = float(spec.get("bf16_tflops", 0) or 0)
+        accel_id = self.primary_card.get("_accel_id", "") if self.primary_card else ""
+
+        decode_eff = (0.70, 0.85) if accel_id == "nvidia" else (0.35, 0.55)
+        prefill_eff = (0.35, 0.50) if accel_id == "nvidia" else (0.18, 0.30)
+
+        total_weight_gb = self._precision_weight_gb(model, plan["precision"])
+        weight_per_card_gb = max(plan.get("weight_per_card_gb", 0.0), total_weight_gb / max(actual_cards, 1), 1.0)
+        active_b = self._parse_numeric_scale(model.get("active", ""), 10.0)
+        total_bw_gb = bw_tbps * 1024 * max(actual_cards, 1)
+        total_tflops = bf16_tflops * max(actual_cards, 1)
+
+        decode_lo = max(1, int((total_bw_gb * decode_eff[0]) / weight_per_card_gb))
+        decode_hi = max(decode_lo + 1, int((total_bw_gb * decode_eff[1]) / weight_per_card_gb))
+
+        # 用激活参数量做粗略 prefill 上限估算，强调这是硬件边界而非框架实测
+        compute_divisor = max(active_b * 10.0, 20.0)
+        prefill_lo = max(1, int((total_tflops * prefill_eff[0]) / compute_divisor))
+        prefill_hi = max(prefill_lo + 1, int((total_tflops * prefill_eff[1]) / compute_divisor))
+
+        penalty = "预计可达边界的 70%-90%" if accel_id == "nvidia" else "实际通常仅能达到该边界的 40%-70%"
+        return {
+            "Decode 上限": f"{decode_lo}-{decode_hi} tok/s",
+            "Prefill 上限": f"{prefill_lo}-{prefill_hi} tok/s",
+            "并发上限": str(plan.get("max_concurrency", "—")),
+            "置信度": self._performance_confidence(),
+            "说明": (
+                f"按 {plan['precision']} / TP={plan['tp']} 估算；"
+                f"国产卡场景下 {penalty}"
+            ),
+        }
+
     def recommend(self) -> Dict:
         cnt = self.accel_count
         has_rdma = self._has_rdma_capability()
 
         if cnt == 0:
-            mode, tp = "CPU 推理（性能有限）", 1
+            mode, tp = "CPU 推理（性能有限）", "1"
             frameworks = ["llama.cpp (CPU)", "Transformers + bitsandbytes"]
-        elif cnt == 1:
-            mode, tp = "单卡部署", 1
-        elif cnt <= 8:
-            mode, tp = f"单机多卡（TP={cnt}）", cnt
         else:
-            # 只有在有RDMA能力时才建议多机方案
-            if has_rdma:
-                mode, tp = f"多机多卡（总 TP≥{cnt}）", cnt
+            candidate_models = self.evaluate_models()
+            viable = [m for m in candidate_models if m.get("_best_plan")]
+            if viable:
+                target = sorted(
+                    viable,
+                    key=lambda m: (
+                        m["_best_plan"]["tp"],
+                        -self._precision_weight_gb(m, m["_best_plan"]["precision"]),
+                    )
+                )[0]
+                best = target["_best_plan"]
+                if best["tp"] == 1:
+                    mode = "单卡优先，多副本扩展吞吐"
+                elif best["tp"] <= 8:
+                    mode = f"按模型动态并行（优先最小可行 TP={best['tp']}）"
+                else:
+                    mode = f"多机多卡（建议从 TP={best['tp']} 起步）"
+                tp = f"{best['tp']}（参考模型：{target['name']} / {best['precision']}）"
             else:
-                mode, tp = f"单机多卡（TP={min(cnt, 8)}）", min(cnt, 8)
+                mode = "单机多卡（当前更适合作为量化试验或多机扩展节点）"
+                tp = "1/2/4/8（按模型最小可行值）"
+                if has_rdma and cnt >= 8:
+                    mode = "多机多卡（本机单独难承载主流大模型）"
 
         if self.primary_card:
             frameworks = self.primary_card.get("_frameworks", ["llama.cpp (CPU)"])
@@ -1417,30 +1742,44 @@ class ReportGenerator:
         results = []
         for m in self.profile.get("models_2026", []):
             r = dict(m)
-            tvram = self.total_vram_gb
-            fp16_gb = m["fp16_gb"]
-            int4_gb = m["int4_gb"]
-            # int8 显存：约为 fp16 的一半（业界经验）；profile 显式给定优先
-            int8_gb = m.get("int8_gb", round(fp16_gb / 2))
+            fp16_gb = float(m["fp16_gb"])
+            int4_gb = float(m["int4_gb"])
+            int8_gb = float(m.get("int8_gb", round(fp16_gb / 2)))
             r["int8_gb"] = int8_gb
 
-            if tvram == 0:
+            best_plan = self._best_plan_for_model(m)
+            r["_best_plan"] = best_plan
+
+            if self.total_vram_gb == 0:
                 r["状态"] = "❌ 无算力卡"
                 r["建议精度"] = "—"
-            elif tvram >= fp16_gb:
-                r["状态"] = f"✅ 总显存 {tvram:.0f}GB ≥ BF16 需求 {fp16_gb}GB，可直接部署"
-                r["建议精度"] = "BF16"
-            elif tvram >= int8_gb:
-                r["状态"] = (f"⚠️ 总显存 {tvram:.0f}GB 不够 BF16（需 {fp16_gb}GB），"
-                             f"可上 INT8 量化（需 {int8_gb}GB）")
-                r["建议精度"] = "INT8 (W8A16)"
-            elif tvram >= int4_gb:
-                r["状态"] = (f"⚠️ 总显存 {tvram:.0f}GB 仅满足 INT4 量化（需 {int4_gb}GB），"
-                             f"BF16/INT8 显存不足")
-                r["建议精度"] = "INT4 (AWQ/GPTQ)"
+                r["推荐并行"] = "—"
+                r["理论最大并发"] = "—"
+            elif best_plan:
+                r["建议精度"] = best_plan["precision"]
+                r["推荐并行"] = f"TP={best_plan['tp']}"
+                r["理论最大并发"] = str(best_plan["max_concurrency"])
+                r["状态"] = (
+                    f"✅ 单卡可用 {best_plan['usable_per_card_gb']:.1f}GB，"
+                    f"扣除权重 {best_plan['weight_per_card_gb']:.1f}GB 和运行时开销 "
+                    f"{best_plan['runtime_overhead_gb']:.1f}GB 后，"
+                    f"剩余 KV 预算 {best_plan['kv_budget_gb']:.1f}GB/卡；"
+                    f"按 {m['context']} 上下文粗估最大并发约 {best_plan['max_concurrency']}"
+                )
             else:
-                r["状态"] = f"❌ 显存不足（INT4 需 ≥{int4_gb}GB，现 {tvram:.0f}GB）"
+                best_attempt = None
+                for precision in ["BF16", "INT8", "INT4"]:
+                    for tp in self._candidate_tp_sizes():
+                        attempt = self._plan_for_model(m, precision, tp)
+                        if best_attempt is None or attempt.get("kv_budget_gb", -10**9) > best_attempt.get("kv_budget_gb", -10**9):
+                            best_attempt = attempt
                 r["建议精度"] = "—"
+                r["推荐并行"] = "需更多卡 / 更低上下文"
+                r["理论最大并发"] = "0"
+                if best_attempt:
+                    r["状态"] = f"❌ {best_attempt['reason']}"
+                else:
+                    r["状态"] = "❌ 当前硬件无法形成可用部署方案"
 
             # 框架适配
             vendor_match = False
@@ -1458,7 +1797,7 @@ class ReportGenerator:
         return results
 
     def perf_scenarios(self) -> List[Dict]:
-        """通用性能预估：所有加速卡共享场景模板。"""
+        """性能边界估算：按场景输出 Decode / Prefill 的理论上限。"""
         scns: List[Dict] = []
         if not self.primary_card:
             return scns
@@ -1500,51 +1839,29 @@ class ReportGenerator:
                 else f"{total_tflops:.0f} TFLOPS"
             )
 
-            # 筛选适用模型
-            match_rule = tpl.get("match_models_by_fp16", {})
             preferred_model_name = tpl.get("preferred_model", "")
             applicable: List[Dict] = []
             preferred_found = False
 
             for model in models:
-                fp16 = model["fp16_gb"]
-                int8 = model.get("int8_gb", round(fp16 / 2))
-                int4 = model["int4_gb"]
-                ok = False
-                precision = "BF16"
-                vram_used = f"~{fp16} GB"
-                if "max_gb_per_card_ratio" in match_rule:
-                    cap = single_gb * match_rule["max_gb_per_card_ratio"]
-                    if fp16 <= cap:
-                        ok, precision, vram_used = True, "BF16", f"~{fp16} GB"
-                    elif int8 <= cap:
-                        ok, precision, vram_used = True, "INT8", f"~{int8} GB"
-                    elif int4 <= cap:
-                        ok, precision, vram_used = True, "INT4/AWQ", f"~{int4} GB"
-                if "max_gb_total_ratio" in match_rule:
-                    cap = total_gb * match_rule["max_gb_total_ratio"]
-                    if fp16 <= cap:
-                        ok, precision, vram_used = True, "BF16", f"~{fp16} GB（权重）+ KV"
-                    elif int8 * 1.3 <= cap:
-                        ok, precision, vram_used = True, "INT8", f"~{int8} GB（权重）+ KV"
-                    elif int4 * 1.5 <= cap:
-                        ok, precision, vram_used = True, "INT4/AWQ", f"~{int4} GB（权重）+ KV"
-                if not ok:
+                model_plan = model.get("_best_plan") if "_best_plan" in model else None
+                if not model_plan:
+                    model_plan = self._best_plan_for_model(model)
+                if not model_plan:
                     continue
-                # 基于 NVIDIA 对标基准估算性能
-                weight_gb = int4 if precision.startswith("INT") else fp16
-                perf = self._estimate_perf(tpl.get("id", ""), model, precision,
-                                            total_gb, weight_gb, actual_cards)
+                if model_plan["tp"] > actual_cards:
+                    continue
 
+                perf = self._estimate_perf_bounds(model, model_plan, max(model_plan["tp"], actual_cards))
                 entry = {
-                    "模型":      model["name"],
-                    "精度":      precision,
-                    "显存占用":  vram_used,
-                    "TTFT":      perf["TTFT"],
-                    "单流 TPS":  perf["单流 TPS"],
-                    "并发(估)":  perf["并发(估)"],
-                    "总吞吐":    perf["总吞吐"],
-                    "说明":      model.get("notes", ""),
+                    "模型": model["name"],
+                    "推荐精度": model_plan["precision"],
+                    "参考并行": f"TP={model_plan['tp']}",
+                    "Decode 上限": perf["Decode 上限"],
+                    "Prefill 上限": perf["Prefill 上限"],
+                    "理论最大并发": perf["并发上限"],
+                    "置信度": perf["置信度"],
+                    "说明": perf["说明"],
                     "_preferred": model["name"] == preferred_model_name,
                 }
                 applicable.append(entry)
@@ -1554,23 +1871,25 @@ class ReportGenerator:
             if not applicable:
                 continue
 
-            # 优先排列preferred_model
+            # 优先排列 preferred_model，其次优先更小 TP
             if preferred_found:
-                applicable.sort(key=lambda x: not x["_preferred"])
+                applicable.sort(key=lambda x: (not x["_preferred"], x["参考并行"]))
+            else:
+                applicable.sort(key=lambda x: x["参考并行"])
 
-            # 移除_preferred字段后返回
             for item in applicable:
                 del item["_preferred"]
 
             applicable = applicable[:3]
 
             entry = {
-                "场景":     tpl["name"],
-                "硬件":     f"{actual_cards} × {display} {card_name} = "
-                            f"{total_gb:.0f} GB HBM / {tflops_str} BF16",
+                "场景": tpl["name"],
+                "硬件": f"{actual_cards} × {display} {card_name} = "
+                        f"{total_gb:.0f} GB HBM / {tflops_str} BF16",
                 "适用模型": applicable,
                 "推理框架": " / ".join(frameworks[:2]),
                 "建议用途": tpl.get("use_case", ""),
+                "口径": "理论边界估算（非实测值）",
             }
             if tpl.get("id") == "multi_node_16":
                 entry["通信"] = f"节点内 {interconnect} + 节点间 RoCE/NDR 400Gb"
@@ -2251,6 +2570,14 @@ class ReportGenerator:
             a(ml["相关 pip 包"])
             a("```")
             a("")
+        if ml.get("运行时可见性"):
+            a("**运行时可见性：**")
+            a("")
+            a("| 项 | 值 |")
+            a("|:----|:----|")
+            for k, v in ml["运行时可见性"].items():
+                a(f"| {k} | {v} |")
+            a("")
 
         a("## 🚀 四、部署方案建议")
         a("")
@@ -2316,22 +2643,49 @@ class ReportGenerator:
         a("## 🤖 五、模型兼容性评估")
         a("")
         a("> 基于当前硬件配置对 **2026 年主流开源大语言模型** 的部署可行性评估")
-        a("> 显存需求按权重粗算（不含 KV Cache），实际部署还要预留 10-30% 给上下文窗口。")
+        a("> v0.10 起不再按“总显存是否大于权重”直接判定，而是按单卡可用显存、运行时开销、")
+        a("> 目标上下文下的 KV Cache 预算粗估部署可行性；结果适合选型期预判，正式上线仍需实测校准。")
         a("")
-        a("| 模型 | 厂商 | 参数 | 激活 | 上下文 | BF16 显存 | INT8 显存 | INT4 显存 | 状态 | 建议精度 | 框架适配 |")
-        a("|:----|:----|:----|:----|:----:|----:|----:|----:|:----|:----:|:----|")
+        a("### 5.1 部署摘要")
+        a("")
+        a("| 模型 | 建议精度 | 推荐并行 | 理论最大并发 | 框架适配 | 部署状态 |")
+        a("|:----|:----:|:----:|:----:|:----|:----|")
+
+        def compact_status(text: str) -> str:
+            if text.startswith("✅"):
+                return "✅ 可部署"
+            if "KV" in text or text.startswith("❌"):
+                return "❌ 目标上下文不足"
+            if text.startswith("⚠️"):
+                return "⚠️ 需适配验证"
+            return text or "—"
+
+        for m in mods:
+            a(
+                f"| **{m['name']}** | {m['建议精度']} | {m.get('推荐并行','—')} "
+                f"| {m.get('理论最大并发','—')} | {m['框架适配']} | {compact_status(m['状态'])} |"
+            )
+        a("")
+        a("### 5.2 详细规格（宽表）")
+        a("")
+        a("> 下表字段较多，HTML 版会自动提供横向滚动；Markdown 版建议在支持表格滚动的预览器中查看。")
+        a("")
+        a("| 模型 | 厂商 | 参数 | 激活 | 上下文 | BF16 显存 | INT8 显存 | INT4 显存 | 建议精度 | 推荐并行 | 理论最大并发 | 框架适配 | 说明 | 状态 |")
+        a("|:----|:----|:----|:----|:----:|----:|----:|----:|:----:|:----:|:----:|:----|:----|:----|")
         for m in mods:
             a(
                 f"| **{m['name']}** | {m['vendor']} | {m['params']} | {m['active']} "
                 f"| {m['context']} | {m['fp16_gb']} GB | {m['int8_gb']} GB | {m['int4_gb']} GB "
-                f"| {m['状态']} | {m['建议精度']} | {m['框架适配']} |"
+                f"| {m['建议精度']} | {m.get('推荐并行','—')} | {m.get('理论最大并发','—')} "
+                f"| {m['框架适配']} | {m.get('notes','—')} | {m['状态']} |"
             )
         a("")
 
         a("## 📊 六、性能预估")
         a("")
-        a("> 基于该卡的公开技术参数（算力、显存带宽、互联方式）和行业推理基准的理论推算得出，"
-          "模型及框架的支持能力以厂家提供的最新文档为准，此处仅用于硬件选型期的可行性参考。")
+        a("> 本章给出的是 **硬件物理边界估算**，不是框架实测值。")
+        a("> Decode 上限偏带宽约束，Prefill 上限偏算力约束；国产卡实际表现通常还会受到"
+          "算子库、通信库、容器可见卡数和框架适配度影响。")
         a("")
         if not scns:
             a("*未匹配到适用场景（典型原因：单卡显存不足以承载评估清单中的任一模型，或卡型未在数据库中收录）。*")
@@ -2342,6 +2696,9 @@ class ReportGenerator:
                 a("")
                 a(f"**硬件配置：** {s['硬件']}")
                 a("")
+                if s.get("口径"):
+                    a(f"**估算口径：** {s['口径']}")
+                    a("")
                 if s.get("通信"):
                     a(f"**通信架构：** {s['通信']}")
                     a("")
@@ -2350,16 +2707,16 @@ class ReportGenerator:
                     for p in s["前置条件"]:
                         a(f"- {p}")
                     a("")
-                a("**推理性能预估：**")
+                a("**性能边界估算：**")
                 a("")
-                a("| 模型 | 精度 | 显存占用 | TTFT | 单流 TPS | 并发(估) | 总吞吐 | 说明 |")
-                a("|:----|:----:|:----|:----:|:----:|:----:|:----:|:----|")
+                a("| 模型 | 推荐精度 | 参考并行 | Decode 上限 | Prefill 上限 | 理论最大并发 | 置信度 | 说明 |")
+                a("|:----|:----:|:----:|:----:|:----:|:----:|:----:|:----|")
                 for mp in s["适用模型"]:
                     a(
-                        f"| **{mp['模型']}** | {mp.get('精度','—')} | "
-                        f"{mp.get('显存占用','—')} | {mp.get('TTFT','—')} | "
-                        f"{mp.get('单流 TPS','—')} | {mp.get('并发(估)','—')} | "
-                        f"{mp.get('总吞吐','—')} | {mp.get('说明','—')} |"
+                        f"| **{mp['模型']}** | {mp.get('推荐精度','—')} | "
+                        f"{mp.get('参考并行','—')} | {mp.get('Decode 上限','—')} | "
+                        f"{mp.get('Prefill 上限','—')} | {mp.get('理论最大并发','—')} | "
+                        f"{mp.get('置信度','—')} | {mp.get('说明','—')} |"
                     )
                 a("")
                 if s.get("推理框架"):
@@ -2370,15 +2727,32 @@ class ReportGenerator:
                     a("")
 
             # 性能指标说明：仅在有场景输出时展示
-            a("### 性能指标说明")
+            a("### 指标说明")
             a("")
             a("| 指标 | 全称 | 说明 |")
             a("|:----|:----|:----|")
-            a("| TTFT | Time To First Token | 首 Token 延迟（用户感知的关键指标） |")
-            a("| TPS | Tokens Per Second | 单流生成速度 |")
-            a("| 并发 | Concurrent Sequences | 服务能稳定支撑的并发数 |")
-            a("| 总吞吐 | Total Throughput | 多并发下系统总 token/s |")
-            a("| MFU | Model FLOP Utilization | 算力利用率，越高越好 |")
+            a("| Decode 上限 | Decode Throughput Upper Bound | 按显存带宽和每卡权重装载量粗估的生成阶段上限 |")
+            a("| Prefill 上限 | Prefill Throughput Upper Bound | 按算力和激活参数量粗估的长上下文预填充上限 |")
+            a("| 理论最大并发 | Max Concurrent Sequences | 在当前上下文和显存预算模型下粗估的并发上限 |")
+            a("| 置信度 | Confidence | 对该卡型和后端估算可靠性的主观等级，低表示需强依赖实测 |")
+            a("")
+
+        bench_cmds = self._benchmark_commands()
+        if bench_cmds:
+            a("## 🧪 实测校准建议")
+            a("")
+            a("> 以下命令用于在目标环境做保守盲测。建议先从 `--gpu-memory-utilization 0.5` 和 "
+              "`--max-num-seqs 1` 起步，确认可启动后再逐步提高。")
+            a("")
+            for item in bench_cmds:
+                a(f"**{item['模型']}** 参考方案：{item['建议']}")
+                a("")
+                a("```bash")
+                a(item["命令"])
+                a("```")
+                a("")
+            a("> 观察日志里的可用 KV Cache、Profile Peak 和 OOM 信息，再回头校准平台系数；"
+              "国产卡后端差异较大，最终部署请以实测结论为准。")
             a("")
 
         # 七、新硬件贡献提示（仅在检测到未收录硬件时显示）
@@ -2413,12 +2787,26 @@ class ReportGenerator:
               "您可在发送前打开 JSON 查看完整内容，确认后再发送。")
             a("")
 
+        cite = self.profile.get("citation", {})
+        if cite.get("enabled") and cite.get("bibtex"):
+            a("## 📚 引用")
+            a("")
+            a(cite.get(
+                "intro",
+                "如果您在研究、选型、平台推广或技术方案评估中使用了 Server Inspector 生成的数据或报告，请引用："
+            ))
+            a("")
+            a("```bibtex")
+            a(cite["bibtex"].strip())
+            a("```")
+            a("")
+
         a("---")
         a("")
         a('<div class="notice" markdown="1">')
-        a('**特别提醒** 性能预估为基于硬件对外公开参数的估算值，'
-          '实际表现受模型、推理框架、参数配置、量化精度、网络拓扑等因素影响，仅供硬件选型参考，'
-          '正式部署请以目标环境实测为准。')
+        a('**特别提醒** 本报告中的性能章节为硬件边界估算，不等同于框架实测。'
+          '实际表现会受到模型结构、推理框架、量化方式、容器可见卡数、互联拓扑和厂商算子库成熟度影响，'
+          '正式部署请务必以目标环境的启动日志和压测结果为准。')
         a("</div>")
         a("")
         a(f"*报告生成: {self.ts} | Server Inspector {self.tool_version} | 配置文件驱动 | 主机: `{self.hostname}`*")
@@ -2442,9 +2830,10 @@ h3{color:#0f172a;font-size:1.1em;margin-top:28px;font-weight:600;
    border-bottom:1px dashed #cbd5e1;padding-bottom:6px}
 h4{color:#374151;font-size:1em;margin-top:18px}
 p{margin:8px 0}
-table{border-collapse:separate;border-spacing:0;width:100%;margin:14px 0 22px;
-      font-size:.92em;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;
-      box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.table-wrap{overflow-x:auto;margin:14px 0 22px;border:1px solid #e5e7eb;border-radius:10px;
+            box-shadow:0 1px 3px rgba(0,0,0,.04);background:#fff}
+table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;margin:0;
+      font-size:.92em;border:none;border-radius:0;overflow:visible;box-shadow:none}
 thead tr{background:linear-gradient(90deg,#3b82f6,#6366f1);color:#fff}
 th{padding:11px 16px;text-align:left;font-weight:600;letter-spacing:.3px;
    white-space:nowrap;border:none}
@@ -2452,6 +2841,7 @@ tbody tr{transition:background .15s}
 tbody tr:nth-child(even){background:#f9fafb}
 tbody tr:hover{background:#eff6ff}
 td{padding:9px 16px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+td:last-child{min-width:280px}
 tbody tr:last-child td{border-bottom:none}
 td strong{color:#1e40af}
 pre{background:#1e293b;color:#e2e8f0;padding:16px 20px;border-radius:8px;
@@ -2511,7 +2901,7 @@ a:hover{text-decoration:underline}
         def flush_table():
             nonlocal in_table, header_done, col_aligns
             if in_table:
-                out.append("</tbody></table>")
+                out.append("</tbody></table></div>")
                 in_table = False
                 header_done = False
                 col_aligns = []
@@ -2543,7 +2933,7 @@ a:hover{text-decoration:underline}
             if line.startswith("|"):
                 if not in_table:
                     flush_lists()
-                    out.append('<table>')
+                    out.append('<div class="table-wrap"><table>')
                     in_table = True
                     header_done = False
                 if re.match(r"^\|[\s\-:|]+\|$", line):
